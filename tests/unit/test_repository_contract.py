@@ -46,6 +46,20 @@ SECRET_PATTERNS = [".env", "*.key", "*.pem", "secrets/"]
 # Canon: BTCXAU contains "XAU" but is not gold. Must never appear as a tradable symbol.
 FORBIDDEN_INSTRUMENTS = ["BTCXAU", "ETHXAU"]
 
+# Modules whose job is to REJECT these instruments, and which must therefore name them.
+# Every file here has tests elsewhere asserting the rejection actually happens — being
+# on this list buys an exemption from the text scan, not from proving the behavior.
+#
+# Adding a file here is a deliberate act. A new module that mentions a forbidden
+# instrument should fail this test until someone justifies it.
+REJECTION_AUTHORITIES = {
+    "NeoFL_SymbolResolver.mqh",           # asserted by NeoFL_SymbolResolver_SelfTest.mq5
+    "NeoFL_SymbolResolver_SelfTest.mq5",
+    "symbol_resolver.py",                 # asserted by test_symbol_resolver.py
+    "webhooks.py",                        # asserted by test_gateway.py ContentValidityTest
+    "normalizers.py",                     # asserted by test_gateway.py InstrumentMappingTest
+}
+
 
 class RepositoryContractTest(unittest.TestCase):
     def test_core_engine_directories_exist(self):
@@ -94,15 +108,11 @@ class RepositoryContractTest(unittest.TestCase):
             one place that must name them; its own tests assert they are rejected
         """
         exempt_dirs = {"legacy", "docs", "tests", ".venv", ".git"}
-        # The symbol resolver, in either language, is the rejection authority.
-        is_resolver = lambda p: "symbolresolver" in p.name.lower().replace("_", "") or (
-            "symbol_resolver" in p.name.lower()
-        )
         searchable = [
             path
             for extension in ("*.py", "*.mq5", "*.mqh", "*.json", "*.yaml", "*.yml")
             for path in REPO_ROOT.rglob(extension)
-            if exempt_dirs.isdisjoint(path.parts) and not is_resolver(path)
+            if exempt_dirs.isdisjoint(path.parts) and path.name not in REJECTION_AUTHORITIES
         ]
         for path in searchable:
             content = path.read_text(encoding="utf-8", errors="ignore")
