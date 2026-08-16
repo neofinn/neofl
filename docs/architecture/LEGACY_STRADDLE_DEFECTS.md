@@ -86,7 +86,59 @@ the code, such as surviving EA reloads.
 
 ---
 
-## SECONDARY DEFECT — the straddle has no stop loss at all
+## VERDICT — the live system works; the script is redundant
+
+Call chain traced and confirmed:
+
+```
+EA line 2090:  NeoFLObs_Update(InpObserverPrefix="NEOFL_OBS", ...)
+                 -> Observer Core line 400: NeoFLObs_StraddleState(prefix, ...)
+                      -> line 326: NeoFLObs_Put(prefix, ..., "BASKET_PNL", basket)
+                                   writes NEOFL_OBS_<sym>_<magic>_BASKET_PNL
+
+EA line 1931:  ReadObserverValue("BASKET_PNL")
+                 reads NEOFL_OBS_<sym>_<magic>_BASKET_PNL     <- same key. MATCHES.
+```
+
+**The EA's internal basket path is complete and functional.** Basket P/L is computed and
+consumed entirely inside the EA.
+
+So the standalone observer is not a broken component — it is a **redundant second
+implementation** of something the EA already does, publishing to a prefix nobody reads.
+
+**Recommended action: stop attaching `NeoFL_Straddle_Observer_v3_85.mq5`. No code change
+is required.** It consumes CPU and produces nothing. The EA is unaffected either way,
+which is why the symptom was "it doesn't seem to do anything" rather than a malfunction.
+
+---
+
+## About the missing stop losses — deliberate, not an oversight
+
+Neither the main entry nor the straddle carries a broker stop:
+
+```mql5
+trade.Buy (lots,      _Symbol, 0.0, 0.0, tp,  comment);            // main: TP only
+trade.Buy (exec_lots, _Symbol, 0.0, 0.0, 0.0, "NEOFL STRADDLE BUY"); // straddle: neither
+```
+
+The only SL mechanism is gated behind `InpEmergencyProtection`, which defaults to **false**.
+
+This is **by design**, not a bug. The v3.6x headers state it directly: *"no initial SL"*,
+*"continuous monitoring, no SL orders, and opposite-entry recovery/reversal."* The strategy
+manages risk by monitoring and by the recovery straddle rather than by broker stops.
+
+That is a legitimate architecture, and it carries a specific consequence worth stating
+plainly: **the basket/straddle mechanism is the risk control.** There is no second line of
+defence behind it. Anything that degrades it — a disconnected observer, a netting account
+that blocks the straddle, a stripped comment breaking position identity — does not merely
+reduce performance. It removes the only protection.
+
+That is the strongest argument for the six constraints below, and for why the v2 engine
+should treat basket integrity as a safety property rather than a feature.
+
+---
+
+## SECONDARY OBSERVATION — the straddle has no stop loss
 
 The README specifies three SL behaviors. **None are implemented.**
 
