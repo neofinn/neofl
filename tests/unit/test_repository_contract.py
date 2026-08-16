@@ -3,6 +3,7 @@
 Cheap structural guards so drift is caught by the suite rather than by review.
 """
 
+import os
 import unittest
 from pathlib import Path
 
@@ -96,6 +97,24 @@ class RepositoryContractTest(unittest.TestCase):
             for instrument in FORBIDDEN_INSTRUMENTS:
                 with self.subTest(file=path.name, instrument=instrument):
                     self.assertNotIn(instrument, content)
+
+
+class BuildToolingTest(unittest.TestCase):
+    """The compile loop is the fastest real verification available; keep it wired up."""
+
+    def test_compile_script_present_and_executable(self):
+        script = REPO_ROOT / "tools" / "mql5_compile.sh"
+        self.assertTrue(script.is_file())
+        self.assertTrue(os.access(script, os.X_OK), "mql5_compile.sh must be executable")
+
+    def test_compile_script_does_not_trust_exit_code(self):
+        """MetaEditor exits 0 on failure and 1 on success; the log is authoritative."""
+        script = (REPO_ROOT / "tools" / "mql5_compile.sh").read_text(encoding="utf-8")
+        self.assertIn("Result:", script)
+        self.assertIn("UTF-16LE", script)
+
+    def test_running_doc_exists(self):
+        self.assertTrue((REPO_ROOT / "docs" / "testing" / "RUNNING.md").is_file())
 
 
 if __name__ == "__main__":

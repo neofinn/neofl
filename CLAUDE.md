@@ -36,15 +36,19 @@ Implementation detail — data structures, refactors, tests, tooling, docs — i
 
 ## Do not fabricate
 
-- Never say code compiled unless it compiled. MQL5 compilation needs MetaEditor on Windows and
-  **cannot be verified on this Mac**. Say so plainly.
-- Never say a trade executed unless you verified it.
+- Never say code compiled unless you actually compiled it. **You can compile on this Mac** —
+  `tools/mql5_compile.sh` drives MetaEditor through MetaTrader 5.app's bundled Wine. So compile;
+  don't guess, and don't claim it either way without running it.
+- Never say a backtest ran unless it ran, or a trade executed unless you verified it.
 - Never invent market data, broker behavior, or API responses.
 - Missing data means `DATA_UNAVAILABLE → NO TRADE`, never a guessed value.
 - Report failures honestly, including your own.
 
-Static text checks over `.mq5` verify *contract presence*, not correctness. Never describe them as
-compilation or as evidence a strategy works.
+Know what each signal proves: a passing Python test means the **logic** is right; a clean compile
+means the code is **valid MQL5**. Neither says the strategy works or is profitable. Static text
+checks over `.mq5` verify contract presence only — never describe them as compilation.
+
+See `docs/testing/RUNNING.md` for the four verification loops and their limits.
 
 ## Architecture rules
 

@@ -90,16 +90,22 @@ docs/           product canon and architecture
 - Every deployable EA ships as one self-contained folder.
 - No secrets in Git, ever.
 
-## Tests
+## Build and test
 
 ```bash
-python3 -m unittest discover -s tests -t .
+python3 -m unittest discover -s tests -t .     # logic + repository contracts
+tools/mql5_compile.sh <dir-or-file.mq5>        # compile MQL5 (works on macOS)
 ```
 
-MQL5 compilation cannot be verified on macOS — MetaEditor is Windows-only. These tests check source
-and repository contracts, not compilation or runtime behavior. Compilation and Strategy Tester results
-must be reported separately from the Windows MT5 host.
+MQL5 **does** compile on this Mac — `tools/mql5_compile.sh` drives MetaEditor through the Wine
+container inside `/Applications/MetaTrader 5.app`. Verified: a 77 KB EA with two includes builds to
+`.ex5` in ~1.2 s.
+
+The Strategy Tester needs a broker account specified in its config, so it is human-initiated rather
+than agent-automated. Full details and the limits of each verification loop:
+[`docs/testing/RUNNING.md`](docs/testing/RUNNING.md).
 
 ## Environment
 
-Development on macOS (Apple Silicon). MT5 execution runs on a Windows VPS/RDP host.
+Development and compilation on macOS (Apple Silicon). Live MT5 execution targets a Windows VPS/RDP
+host.

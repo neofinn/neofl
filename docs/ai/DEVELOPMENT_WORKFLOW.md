@@ -69,16 +69,21 @@ Run before claiming completion:
 python3 -m unittest discover -s tests
 ```
 
-### What MQL5 tests can and cannot do
+### What each signal actually proves
 
-This is a Mac. MetaEditor is Windows-only. Therefore:
+MQL5 **compiles on this Mac** via `tools/mql5_compile.sh` (MetaEditor under MetaTrader 5.app's
+bundled Wine). Compile every change — it takes about a second.
 
-- Python static contract tests over `.mq5` source **can** verify that required functions, guards,
-  magic-number isolation, and state transitions are present in the text.
-- They **cannot** verify compilation, runtime behavior, broker interaction, or profitability.
+- Python tests prove the **logic** is right. Not that the EA works.
+- A clean compile proves the code is **valid MQL5** and links with its includes. Not that the
+  strategy is correct.
+- A Strategy Tester run proves **behavior against historical data**. Not live broker behavior.
+- Only a demo account proves **real execution** — fills, slippage, rejections.
 
-Never blur that line in a status report. Compilation and Strategy Tester runs happen on the Windows
-MT5 host and must be reported as separate, human-observed evidence.
+Never blur these in a status report. The Strategy Tester requires a broker account in its config, so
+it is human-initiated; report backtest results as human-observed evidence.
+
+See `docs/testing/RUNNING.md`.
 
 ## Definition of done
 
