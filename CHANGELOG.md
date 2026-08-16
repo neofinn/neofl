@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-08-16 (build step 6) — Bucket engine
+
+A bucket is a portfolio of related positions, not one position. In this architecture the
+basket mechanism **is** the risk control — the legacy analysis confirmed there are no broker
+stops behind it — so bucket integrity is treated as a safety property.
+
+### Added
+- `python/neofl_core/bucket.py` — bucket composition, aggregate P/L, signed and gross
+  exposure, state machine, and the zero-floating-price calculation.
+- `tests/unit/test_bucket.py` — 15 tests including the delta-neutral trap.
+
+### The finding that matters: delta-neutral buckets can never recover
+
+The zero-floating price solves
+
+```
+P = ( Σ(dᵢ·vᵢ·kᵢ·eᵢ) − costs − realized ) / Σ(dᵢ·vᵢ·kᵢ)
+```
+
+**The denominator can be zero.** With a 0.01 long against a 0.01 short, the legs offset
+exactly: price movement changes nothing and bucket P/L is frozen at whatever the costs make
+it. There is no price at which it reaches zero, so a recovery system waiting for one waits
+forever — silently, looking exactly like patience.
+
+This is not contrived; it is what a same-size hedge produces. It is also why the legacy
+design pairs **0.03 against 0.01** rather than 0.01 against 0.01. `zero_floating_price()`
+returns `None` for these buckets rather than a plausible number, and `is_delta_neutral()`
+names the condition.
+
+### Verified
+- Zero-floating price exact to 9 decimal places: 0.01 BUY @ 2400 + 0.03 SELL @ 2380 →
+  2370.00, with bucket P/L confirmed 0.0 at that price.
+- Costs and realized P/L both shift the zero point, and the shifted point still solves to
+  exactly zero.
+- 112 tests pass.
+
+### Constraints honored from the legacy analysis
+- Identity by explicit role, never by comment — `Position` has no comment field, and a test
+  asserts it never gains one.
+- One basket authority: this module alone computes bucket state.
+- Costs included in every P/L figure.
+- "No zero-floating price exists" is `None`, distinguishable from a price of zero.
+
+Trading-behavior change: no (state computation only; places no orders)
+
 ## 2026-08-16 (build step 4) — Risk engine
 
 Position sizing and risk validation. The strategy requests risk; Core computes size.
