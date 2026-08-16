@@ -197,3 +197,49 @@ getting it wrong matters.
   which is now one market among several rather than the only one modelled.
 - Strategies ask "is my market open?" rather than assuming. A strategy that cannot answer
   that for its instrument is not ready to trade it.
+
+---
+
+## D-004 — The NeoFL repository is public
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+**Supersedes:** `MASTER_SPEC_v1.0.md` §5 ("Create a private GitHub repository: NeoFL")
+
+### Decision
+
+The NeoFL GitHub repository is **public**.
+
+### Context
+
+The canon specified a private repository. The product owner chose public after being shown
+what becomes permanently visible: the `legacy/` tree of 37 MQL5 files (including
+`NeoFL_MasterBrain_v3_85.mqh`, the straddle/bucket recovery engine, and the GOLD 5.x–6.6
+dual-engine line), the full architecture canon, and the decision log.
+
+Publication is effectively irreversible — forks, caches and indexes survive deletion of the
+original. This was stated before the decision was taken.
+
+### What does NOT change
+
+The secrets rule is unaffected and becomes **more** load-bearing, not less:
+
+- No broker credentials, API keys, exchange credentials, AI API keys, SSH keys or account
+  passwords in the repository — ever.
+- `.gitignore` excludes `.env*`, `*.key`, `*.pem`, `secrets/`, `accounts.ini` and
+  `assistant.ini` (which holds the MT5 MCP API keys).
+- Anything requiring a secret is supplied through environment variables or untracked local
+  config.
+
+In a private repository a leaked key is a mistake. In a public one it is a live incident
+within minutes of the push. Every commit from here is subject to the same scan that was run
+before the first push: tracked-file names, key-shaped strings, and high-entropy blobs.
+
+### Consequences
+
+1. Treat every commit message and comment as public writing.
+2. Broker names, account numbers, and balances must not appear in commits, logs, or test
+   fixtures.
+3. Backtest reports and terminal logs may contain account identifiers — they are not
+   committed, and `.gitignore` already excludes `logs/` and `*.log`.

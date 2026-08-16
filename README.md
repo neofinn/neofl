@@ -88,7 +88,7 @@ docs/           product canon and architecture
 - Missing data means `DATA_UNAVAILABLE → NO TRADE` — never a fabricated value.
 - Gold resolution is semantic: `GOLD` and XAUUSD variants valid, `BTCXAU` rejected.
 - Every deployable EA ships as one self-contained folder.
-- No secrets in Git, ever.
+- No secrets in Git, ever — **this repository is public** (decision D-004), so a leaked key is a live incident, not a private mistake.
 
 ## Build and test
 
