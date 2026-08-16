@@ -64,3 +64,76 @@ Recommendations flow `AI → validation/policy → human approval → configurat
    Setting lives under Tools → Options. Owner action — NeoFL does not modify terminal settings.
 3. The Agentic Brain (build step 17) remains advisory-only, as the canon already specifies.
 4. Deterministic operation is unaffected: if every AI component is offline, NeoFL keeps trading.
+
+---
+
+## D-002 — The AI observes the data feed and verifies the engines process it correctly
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+**Refines:** D-001
+
+### Decision
+
+The AI observes the data feed, and observes whether the engine scripts are processing that data as
+they should. It is a correctness monitor, not merely a passive analyst.
+
+### Why this is a sharpening, not a repetition
+
+D-001 said what the AI may not do. D-002 says what it is *for*. The distinction matters because
+"analyze the results" and "verify the processing was correct" demand different things of the system:
+
+- Judging *results* needs outputs — P/L, trades taken, win rate.
+- Judging *correctness* needs **inputs, the decision, and the reasoning** — enough to independently
+  re-derive what the engine should have concluded and compare it against what it did conclude.
+
+An engine that emits only `BUY XAUUSD 0.01` cannot be checked. An engine that emits *"M15 range
+2412.30/2408.10, M5 close 2413.05 above range, CHOCH confirmed, therefore LONG"* can be, because a
+verifier can evaluate whether that conclusion actually follows from those inputs.
+
+### Engineering consequence: every Core engine emits decision provenance
+
+This is now a design requirement for all Core modules, not something bolted on at build step 9.
+
+On every meaningful decision, an engine emits:
+
+| Field | Meaning |
+|---|---|
+| inputs | the data the decision was made from, with source and timestamp |
+| data quality | `DATA_OK` / `DELAYED` / `INCOMPLETE` / `UNAVAILABLE` / `INVALID` |
+| decision | what was concluded |
+| reason | why — the rule or threshold that fired |
+| rejections | what was considered and declined, **and why** |
+
+The last row is the one most often skipped and the most valuable. Silence is ambiguous: an engine
+emitting nothing might be correctly finding no setup, or might be broken and blind — and from the
+outside those look identical. An engine that emits *"no trade: ATR 18 points, below minimum 50"* is
+verifiably working.
+
+**Absence of a signal must itself be an observable event.**
+
+### The pattern already exists
+
+`CORE/NeoFL_SymbolResolver` was built this way before this decision was recorded. It does not return
+a bare boolean — it populates `reject_reason`:
+
+```
+BTCXAU -> rejected: "XAU present as quote currency, not base; not the gold instrument"
+```
+
+An observer reading that can confirm the resolver rejected `BTCXAU` for the *right* reason rather
+than by accident. Had it merely returned `false`, a resolver that rejected everything would be
+indistinguishable from a correct one.
+
+This is the house pattern. Every subsequent Core engine follows it.
+
+### Consequences
+
+1. Engines are built observable from the first line, not instrumented afterwards.
+2. The Observer Network (build step 9) becomes a consumer of a contract the engines already honor,
+   instead of having to reverse-engineer intent from outputs.
+3. Verification works offline: provenance records are replayable, so correctness can be checked
+   against historical data without touching a live account — entirely within D-001.
+4. This grants no authority to correct what it finds. Findings are reported; remediation still flows
+   through human approval per D-001.

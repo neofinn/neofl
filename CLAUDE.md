@@ -67,8 +67,14 @@ See `docs/testing/RUNNING.md` for the four verification loops and their limits.
    modify, or close an order, or change live risk parameters. Recommendations flow through
    validation → human approval → configuration, never directly into live logic. And external AI must
    never be a single point of failure: if every AI component is offline, NeoFL keeps trading.
-9. Gold symbol resolution is semantic, not substring: `GOLD` and XAUUSD broker variants are valid;
-   `BTCXAU` is rejected.
+9. **Every engine emits decision provenance** (decision D-002). The AI's job is to verify engines
+   process data correctly, which is only possible if each decision carries its inputs, data quality,
+   the decision, the reason, and what was rejected and why. A bare `true`/`false` or a bare order is
+   not verifiable. **Absence of a signal must itself be an observable event** — "no trade: ATR 18
+   below minimum 50" is verifiable; silence is not. See `CORE/NeoFL_SymbolResolver` (`reject_reason`)
+   for the house pattern.
+10. Gold symbol resolution is semantic, not substring: `GOLD` and XAUUSD broker variants are valid;
+    `BTCXAU` is rejected.
 
 ## Critical latest decisions
 
