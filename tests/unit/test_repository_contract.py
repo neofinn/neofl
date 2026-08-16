@@ -84,13 +84,24 @@ class RepositoryContractTest(unittest.TestCase):
                 self.assertIn(pattern, gitignore)
 
     def test_no_forbidden_instruments_outside_legacy_and_docs(self):
-        """Gold only. Legacy is preserved as-is; docs discuss these symbols deliberately."""
-        exempt = {"legacy", "docs", "tests", ".venv", ".git"}
+        """Gold only: no module may treat BTCXAU/ETHXAU as tradable.
+
+        Exempt by design:
+          - legacy/ is preserved as-is and never executed
+          - docs/ and tests/ discuss these symbols deliberately
+          - the symbol resolver is the designated rejection authority, so it is the
+            one place that must name them; its own tests assert they are rejected
+        """
+        exempt_dirs = {"legacy", "docs", "tests", ".venv", ".git"}
+        # The symbol resolver, in either language, is the rejection authority.
+        is_resolver = lambda p: "symbolresolver" in p.name.lower().replace("_", "") or (
+            "symbol_resolver" in p.name.lower()
+        )
         searchable = [
             path
             for extension in ("*.py", "*.mq5", "*.mqh", "*.json", "*.yaml", "*.yml")
             for path in REPO_ROOT.rglob(extension)
-            if exempt.isdisjoint(path.parts)
+            if exempt_dirs.isdisjoint(path.parts) and not is_resolver(path)
         ]
         for path in searchable:
             content = path.read_text(encoding="utf-8", errors="ignore")

@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-08-16 (later still) — first Core module: Symbol Resolver
+
+First NeoFL source code. Build step 2 of the canon order (Symbol / Instrument Resolver).
+
+### Added
+- `CORE/NeoFL_SymbolResolver/NeoFL_SymbolResolver.mqh` — resolves a broker symbol to an
+  `NeoFLInstrument` descriptor. Semantic base-symbol matching, not substring: XAU counts as gold
+  only when it is the BASE, i.e. immediately followed by a recognized quote currency. This is what
+  makes `BTCXAU` reject (XAU there is the quote of a crypto cross) while `PREFIX_XAUUSD_SUFFIX`
+  resolves.
+- `CORE/NeoFL_SymbolResolver/NeoFL_SymbolResolver_SelfTest.mq5` — MT5 Script, places no orders,
+  prints PASS/FAIL for every canon case. Deployed to `MQL5/Scripts/NeoFL/`.
+- `python/neofl_core/symbol_resolver.py` — reference mirror of the same rules, so the logic is
+  testable in milliseconds rather than only inside MetaTrader.
+- `tests/unit/test_symbol_resolver.py` — 11 tests covering valid variants, rejections, normalization,
+  and mirror consistency with the MQL5 module.
+
+### Fixed
+- The repository's gold-only guard flagged the resolver itself, since the resolver must name
+  `BTCXAU`/`ETHXAU` to reject them. Exempted the resolver in both languages as the designated
+  rejection authority; its own tests assert the rejection behavior.
+
+### Verified
+- MQL5 compile: 0 errors, 0 warnings.
+- Python suite: 26 tests pass.
+- Logic checked case by case; `BTCXAU`, `ETHXAU`, `BTCXAU.pro` all correctly rejected.
+- NOT verified: runtime behavior in MT5 against a live broker symbol. The self-test's live-resolve
+  section needs a human to run it on a chart.
+
+Trading-behavior change: no (no entry, exit, filter, or risk rule; classification only)
+
 ## 2026-08-16 (later) — v2 canon: platform architecture supersedes v1.0
 
 The product owner supplied a revised handoff defining NeoFL as a multi-strategy platform. This
