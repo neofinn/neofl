@@ -243,3 +243,36 @@ before the first push: tracked-file names, key-shaped strings, and high-entropy 
    fixtures.
 3. Backtest reports and terminal logs may contain account identifiers — they are not
    committed, and `.gitignore` already excludes `logs/` and `*.log`.
+
+---
+
+## D-005 — NeoFL requires hedging accounts
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+
+### Decision
+
+NeoFL runs on **hedging** accounts, always.
+
+### Why it matters
+
+The bucket/straddle recovery architecture is only possible under hedging. A straddle
+requires a long and a short open simultaneously on one symbol; on a **netting** account
+the opposite order does not create a second position — it reduces or closes the first.
+
+The legacy v3.85 engine guards this correctly (`if(!IsHedgingAccount()) return false;`)
+but announces the refusal once and then falls silent, so on a netting account the entire
+recovery system never engages while looking identical to a system that simply found no
+setup.
+
+### What this changes in practice
+
+1. **Startup is a hard gate, not a warning.** An engine that cannot run its risk control
+   must refuse to start, not run unprotected. Per D-002 this must be continuously
+   observable, not a single log line.
+2. Bucket and Straddle engines may assume multiple simultaneous positions per symbol.
+3. Position identity cannot rely on "one position per symbol" — several coexist, which is
+   precisely why identity must come from a magic number or a ticket registry rather than
+   the symbol or a comment.
