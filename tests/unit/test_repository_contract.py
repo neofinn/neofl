@@ -35,6 +35,7 @@ REQUIRED_FILES = [
     "docs/product/ENGINE_OBSERVER_SCRIPTS_LAYER.md",
     "docs/product/MASTER_UNIVERSE_CANON.md",
     "docs/product/MASTER_SPEC_v1.0.md",
+    "docs/product/DECISIONS.md",
     "docs/architecture/ARCHITECTURE.md",
     "docs/architecture/SOURCE_INVENTORY.md",
     "docs/ai/DEVELOPMENT_WORKFLOW.md",

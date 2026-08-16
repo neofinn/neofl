@@ -62,9 +62,11 @@ See `docs/testing/RUNNING.md` for the four verification loops and their limits.
 6. Asset-specific assumptions live in adapters and configuration, never in Core.
 7. **Packaging:** every deployable EA ships as one folder containing the `.mq5` and every `.mqh` and
    support file it needs.
-8. External AI must never be a single point of failure — if the AI is offline, NeoFL keeps trading
-   deterministically. AI recommendations flow through validation → approval → configuration, never
-   directly into live logic.
+8. **AI processes data only — it holds no order authority** (decision D-001). AI may read market
+   data, positions, history, logs, and telemetry, and may analyze and recommend. It may never place,
+   modify, or close an order, or change live risk parameters. Recommendations flow through
+   validation → human approval → configuration, never directly into live logic. And external AI must
+   never be a single point of failure: if every AI component is offline, NeoFL keeps trading.
 9. Gold symbol resolution is semantic, not substring: `GOLD` and XAUUSD broker variants are valid;
    `BTCXAU` is rejected.
 

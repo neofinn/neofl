@@ -83,7 +83,7 @@ docs/           product canon and architecture
 ## Ground rules
 
 - Trading logic is decided by the human product owner, never silently by an AI.
-- MQL5 is the only execution authority; Python and AI components are advisory.
+- MQL5 is the only execution authority. **AI processes data only — it never places orders.**
 - If the AI is offline, NeoFL keeps trading deterministically.
 - Missing data means `DATA_UNAVAILABLE → NO TRADE` — never a fabricated value.
 - Gold resolution is semantic: `GOLD` and XAUUSD variants valid, `BTCXAU` rejected.
