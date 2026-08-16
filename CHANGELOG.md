@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-08-16 (build step 3) — Market Data, Session, Data Quality; rooms; packaging tool
+
+### Added — Core
+- `CORE/NeoFL_DataValidation/NeoFL_DataQuality.mqh` — the five data-quality states and the
+  `NeoFLDecision` provenance record every engine emits (D-002). Verdicts distinguish DECLINE
+  (evaluated, conditions not met — normal) from BLOCKED (could not evaluate) and ERROR.
+- `CORE/NeoFL_MarketData/NeoFL_MarketData.mqh` — bars and quotes that report quality instead of
+  assuming it. Refuses shift=0 (the forming bar), validates OHLC consistency, reports INCOMPLETE
+  rather than silently returning fewer bars, and assesses tick staleness against a freshness budget.
+- `CORE/NeoFL_Session/NeoFL_Session.mqh` — US session timing derived from GMT with DST computed,
+  never from broker server time. Opening range = the first M15 candle (09:45 ET), per canon.
+- `CORE/NeoFL_MarketData/NeoFL_CoreSelfTest.mq5` — MT5 Script, places no orders, exercises all three
+  against the live broker.
+- `python/neofl_core/session.py` + `tests/unit/test_session.py` — DST and session-window mirror.
+
+### Added — tooling
+- `tools/mql5_package.sh` — builds a self-contained deployment package per the canon's hard
+  single-folder rule: walks the include graph from an entry `.mq5`, copies every dependency flat,
+  rewrites include paths, detects basename collisions, then compiles to prove it deploys.
+- `tools/mql5_compile.sh` now stages the parent tree when cross-directory `../` includes are present,
+  so CORE modules compile in place during development.
+
+### Added — workspace
+- Per-strategy `CLAUDE.md` in all seven `STRATEGIES/*` directories, so a session opened in a
+  strategy room arrives knowing that strategy's rules, ancestors and traps.
+- `docs/ai/ROOMS.md` — which room owns what. Shared code changes in the infrastructure room only.
+
+### Verified
+- MQL5 compile: 0 errors, 0 warnings, both self-tests packaged and deployed.
+- Python suite: 38 tests pass.
+- DST boundaries asserted against the real calendar for 2024–2027, not recomputed by the logic
+  under test.
+- NOT verified: behavior against live broker data — needs a human to run the script in MT5.
+
+Trading-behavior change: no (data access, timing, and observability only; no entry/exit/risk rule)
+
 ## 2026-08-16 (later still) — first Core module: Symbol Resolver
 
 First NeoFL source code. Build step 2 of the canon order (Symbol / Instrument Resolver).

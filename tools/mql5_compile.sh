@@ -49,18 +49,45 @@ else
     sources=("$target")
 fi
 
-work="$STAGE_UNIX/$(basename "$src_dir")"
+# Decide what to stage.
+#
+# A deployment package is flat (canon: EA + every required .mqh in ONE folder), so
+# staging that one directory is enough. But CORE modules are organised into sibling
+# directories during development and include each other with "../Other/File.mqh".
+# Those need the parent tree staged, or the include cannot resolve.
+if grep -rqs '#include[[:space:]]*"\.\./' "$src_dir" 2>/dev/null; then
+    stage_root="$(cd "$src_dir/.." && pwd)"
+    sub="$(basename "$src_dir")"
+    echo "note: cross-directory includes detected; staging parent tree $(basename "$stage_root")/"
+else
+    stage_root="$(cd "$src_dir" && pwd)"
+    sub="."
+fi
+
+work="$STAGE_UNIX/$(basename "$stage_root")"
 rm -rf "$work"; mkdir -p "$work"
-# Copy the whole directory so includes and support files come along.
-find "$src_dir" -maxdepth 1 -type f \( -name '*.mq5' -o -name '*.mqh' -o -name '*.set' \) \
-    -exec cp {} "$work/" \;
-work_win="$STAGE_WIN\\$(basename "$src_dir")"
+
+# Copy the tree, preserving relative structure so "../Sibling/File.mqh" resolves.
+( cd "$stage_root" && find . -type f \
+    \( -name '*.mq5' -o -name '*.mqh' -o -name '*.set' \) -print0 \
+  | while IFS= read -r -d '' rel; do
+        mkdir -p "$work/$(dirname "$rel")"
+        cp "$rel" "$work/$rel"
+    done )
+
+if [ "$sub" = "." ]; then
+    work_dir="$work"
+    work_win="$STAGE_WIN\\$(basename "$stage_root")"
+else
+    work_dir="$work/$sub"
+    work_win="$STAGE_WIN\\$(basename "$stage_root")\\$sub"
+fi
 
 failed=0
 for src in "${sources[@]}"; do
     name="$(basename "$src")"
     stem="${name%.mq5}"
-    log_unix="$work/$stem.compile.log"
+    log_unix="$work_dir/$stem.compile.log"
 
     printf '\n=== compiling %s ===\n' "$name"
     WINEPREFIX="$WINE_PREFIX" WINEDEBUG=-all "$WINE_BIN" "$METAEDITOR" \
@@ -83,8 +110,8 @@ for src in "${sources[@]}"; do
 
     if [ "${errors:-1}" -ne 0 ] 2>/dev/null; then
         failed=$((failed + 1))
-    elif [ -f "$work/$stem.ex5" ]; then
-        cp "$work/$stem.ex5" "$src_dir/"
+    elif [ -f "$work_dir/$stem.ex5" ]; then
+        cp "$work_dir/$stem.ex5" "$src_dir/"
         echo "OK    -> $src_dir/$stem.ex5"
     else
         echo "FAIL  $name — reported 0 errors but produced no .ex5"

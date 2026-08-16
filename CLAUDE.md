@@ -1,5 +1,10 @@
 # NeoFL — instructions for AI agents
 
+> **This is the INFRASTRUCTURE room.** It owns CORE, OBSERVER, DATA, SCRIPTS, EXTERNAL_BRAIN, build
+> tooling, canon, decisions, and tests. Each strategy has its own room under `STRATEGIES/<NAME>/`
+> with its own `CLAUDE.md`. Shared-code changes happen **here only** — a strategy room cannot see
+> whether a CORE change broke the other six. See `docs/ai/ROOMS.md`.
+
 NeoFL is a modular algorithmic trading platform for MetaTrader 5: one shared Core engine, seven
 independent strategies. Real money is the eventual endpoint, so the constraints below are hard rules.
 
