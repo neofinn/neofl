@@ -1,129 +1,193 @@
 # Legacy straddle observation — defect analysis
 
-The product owner reported that the straddle observation in the Candle Revisit engine
-"wasn't working properly". This is the direct ancestor of the v2 Straddle Engine
-(build step 7), so the causes matter before anything is ported.
+The product owner reported the straddle observation "wasn't working properly", then supplied
+`NeoFL_v3_85_LIVE_ENGINE_ONE_FOLDER.zip` — the current LIVE build. This is the direct
+ancestor of the v2 Straddle Engine (build step 7), so the causes matter before porting.
 
-Analysis is of `legacy/candle-revisit-master-brain/` — read-only reference, not modified.
+Package preserved at `legacy/candle-revisit-master-brain/v3.85_LIVE_ENGINE/`, unmodified.
 
----
-
-## Defect 1 — the standalone observer script cannot see straddles at all
-
-**Most likely explanation for the reported symptom.**
-
-`NeoFL_Observer_Network_v1_20_Institutional.mq5` contains **zero** references to straddles
-or baskets. It includes `NeoFL_Observer_Core.mqh` — the **v1.x** core.
-
-The straddle observation logic lives in a *different* file: `NeoFL_Observer_Core_v2_00.mqh`
-(33 straddle references, including `NeoFLObs_StraddleState`).
-
-```
-NeoFL_Observer_Network_v1_20.mq5  ->  NeoFL_Observer_Core.mqh      (v1.x, 0 straddle refs)
-                                       ^ the script that was run
-
-NeoFL_Observer_Core_v2_00.mqh          (v2.00, full straddle state engine)
-                                       ^ where the logic actually is
-```
-
-Running the v1.20 network script to observe straddles produces nothing, because it was
-built before straddles existed. It is not malfunctioning — it is the wrong version.
-
-The canon names `NeoFL_Observer_Network_v2_00.mq5` as the confirmed-latest network file,
-and **that file is missing from this machine**. The pair is split: the v2.00 *core* is
-present (inside the v3.85 package), the v2.00 *network* is not.
-
-**Action:** recover `NeoFL_Observer_Network_v2_00.mq5`, or treat the network layer as
-unbuilt and write it fresh against the v2 canon.
+**All three components compile cleanly** (0 errors). This is not a code fault. It is a
+wiring fault, which is exactly why it fails silently.
 
 ---
 
-## Defect 2 — straddle identity rests on a comment string
+## PRIMARY DEFECT — the straddle observer is orphaned
 
-The straddle and the main trade **share the same magic number**:
+`NeoFL_Straddle_Observer_v3_85.mq5` works correctly. **Nothing reads its output.**
+
+It publishes to global variables under one prefix, and the EA reads a different one:
+
+```
+Observer writes:   GV_PREFIX = "NEOFL_SB_"  + _Symbol + "_" + magic + "_"
+                              └─ "NEOFL_SB_XAUUSD_26081401_BASKET_PNL"
+
+EA reads:          ObserverKey = InpObserverPrefix + "_" + _Symbol + "_" + magic + "_"
+                   InpObserverPrefix = "NEOFL_OBS"
+                              └─ "NEOFL_OBS_XAUUSD_26081401_BASKET_PNL"
+```
+
+`NEOFL_SB_` ≠ `NEOFL_OBS_`. So in the EA:
 
 ```mql5
-trade.SetExpertMagicNumber(InpMagic);              // main trade
+double basket = ReadObserverValue("BASKET_PNL", 0.0);
+```
+
+`GlobalVariableCheck()` fails and the fallback is returned. **`basket` is always exactly
+0.0**, regardless of what the observer computed.
+
+The intended connector exists — `NeoFL_Straddle_Observer_Bridge_v3_85.mqh`, whose header
+says *"Include in the EXECUTION EA"* — but the EA's includes are:
+
+```mql5
+#include <Trade/Trade.mqh>
+#include "NeoFL_Observer_Core_v2_00.mqh"
+#include "NeoFL_MasterBrain_v3_85.mqh"
+```
+
+The bridge is included **nowhere in the package**. It is dead code. So the observer's
+latched `CLOSE_COMMAND` is never consumed either.
+
+### What is actually running
+
+There are two independent basket calculations, and only one is connected:
+
+| Component | Prefix | Consumed? |
+|---|---|---|
+| EA-internal, via `NeoFLObs_StraddleState` in Observer Core v2.00 | `NEOFL_OBS_` | ✅ yes — the EA reads its own writes |
+| Standalone `NeoFL_Straddle_Observer_v3_85.mq5` | `NEOFL_SB_` | ❌ **no — nothing reads it** |
+
+The README instructs the operator to attach the observer script. Doing so consumes CPU,
+writes globals into the void, and has **zero effect on trading**. Which is precisely the
+reported symptom: the script runs, logs plausibly, and changes nothing.
+
+### ⚠️ The obvious fix is dangerous
+
+Aligning the prefixes — making the observer write `NEOFL_OBS_` — would be **worse than the
+bug**. Both the EA (via `NeoFLObs_Update`) and the script would then write `BASKET_PNL` to
+the same key on different schedules. The EA would act on whichever wrote last, mixing two
+basket figures computed at different instants. A racing basket calculation authorising
+position closure is a considerably worse failure than one that does nothing.
+
+### The two coherent fixes
+
+**Option A — drop the standalone observer (simplest).**
+The EA already computes and consumes basket P/L internally through Observer Core v2.00.
+The standalone script is a disconnected duplicate. Stop attaching it; delete it from the
+package so no operator is misled into running it.
+
+**Option B — make the standalone observer authoritative.**
+1. `#include "NeoFL_Straddle_Observer_Bridge_v3_85.mqh"` in the EA.
+2. Call `NeoFL_StraddleObserver_Process(trade, InpMagic)` early on each tick.
+3. **Disable the EA's internal basket path** so the two cannot both decide.
+4. Add a heartbeat check — see below.
+
+Option A is recommended unless the standalone observer exists for a reason not visible in
+the code, such as surviving EA reloads.
+
+---
+
+## SECONDARY DEFECT — the straddle has no stop loss at all
+
+The README specifies three SL behaviors. **None are implemented.**
+
+```
+README: "Initial Straddle SL: Straddle's OWN breakeven."
+README: "Move Straddle SL to the basket-neutral protection level."
+README: "Trail the straddle SL only in the profitable direction."
+```
+
+The straddle opens with stop loss and take profit both zero:
+
+```mql5
+ok = trade.Buy (exec_lots, _Symbol, 0.0, 0.0, 0.0, "NEOFL STRADDLE BUY");
+ok = trade.Sell(exec_lots, _Symbol, 0.0, 0.0, 0.0, "NEOFL STRADDLE SELL");
+                                    ^^^  ^^^
+                                    sl   tp
+```
+
+The only `PositionModify` calls in the entire EA are inside the `InpEmergencyBrokerSL`
+block, applying a single global emergency stop to any position — not a per-straddle
+breakeven, and not a trail.
+
+So the recovery straddle — fixed at **0.03 lots**, three times the main entry's 0.01 hard
+cap — runs entirely unprotected apart from that optional emergency stop. On a gap or a fast
+adverse move, the leg intended to *rescue* the basket is the largest unhedged exposure in it.
+
+---
+
+## TERTIARY DEFECT — the bridge inverts the documented rule
+
+Currently inert, but a trap if Option B is taken without reading it.
+
+```
+README:  3. Close the original losing main trade.
+         4. Keep the 0.03 straddle running as the profit runner.
+```
+
+```mql5
+// bridge
+NeoFL_StraddleObserver_CloseStraddles(trade, magic);   // closes the STRADDLE
+```
+
+The bridge closes the straddle — the intended profit runner — and leaves the losing main
+trade open. That is the inverse of the documented architecture and of
+`MASTER_ARCHITECTURE_v2.md` §12 ("the straddle is transformed from a recovery hedge into the
+profit runner"). Wiring the bridge in as-is would bank the winner and keep the loser.
+
+---
+
+## MINOR — commission is excluded from floating basket P/L
+
+```mql5
+input bool InpIncludeSwapCommission = true;   // name promises commission
 ...
-trade.SetExpertMagicNumber(InpMagic);              // straddle -- same magic
-ok = trade.Buy(exec_lots, _Symbol, 0, 0, 0, "NEOFL STRADDLE BUY");
+if(InpIncludeSwapCommission)
+   p += PositionGetDouble(POSITION_SWAP);     // only swap is added
 ```
 
-So the only thing distinguishing them is the comment text:
+MT5 does not expose commission on an open position — it lives on the deal. The closed-P/L
+path does include `DEAL_COMMISSION`, but the floating path cannot, so basket P/L is
+overstated by the round-turn commission while positions are open.
 
-```mql5
-bool NeoFLObs_IsStraddlePosition()
-{
-   return (StringFind(c, "NEOFL STRADDLE") >= 0);
-}
-```
-
-Position comments are **not reliable broker state**. They are routinely truncated,
-rewritten on partial fill, or stripped entirely depending on the broker and the
-execution path. Nothing in the MT5 contract guarantees a comment survives.
-
-The failure is worse than "the straddle becomes invisible", because the main-position
-scan uses the same test *inverted*:
-
-```mql5
-if (NeoFLObs_IsStraddlePosition()) continue;   // skip straddles when finding the main trade
-```
-
-If a broker strips the comment, the straddle stops matching, so it is no longer skipped —
-and **the straddle gets mistaken for the main position**. Basket P/L is then computed from
-the wrong pair, and the bucket-zero transition either never fires or fires on numbers that
-describe a position that isn't there.
-
-**Design conclusion for v2 (binding):** the Bucket/Straddle engine must **not** identify
-roles by comment. Options, in order of robustness:
-
-1. **Distinct magic number per role** — e.g. main `…01`, straddle `…02`. Magic is
-   first-class broker state and survives everything a comment does not.
-2. **A position-ticket registry** held by the Bucket engine, persisted so it survives a
-   terminal restart.
-
-Comments may carry human-readable context. They must never carry identity.
+Consequence: "basket reached breakeven" fires slightly **before** true breakeven. On
+0.01 + 0.03 lots of gold this is small, but it biases every recovery exit the same
+direction, and the whole mechanism keys off crossing zero.
 
 ---
 
-## Defect 3 — a netting account makes the straddle impossible, silently
+## MINOR — no liveness check on the observer
 
-```mql5
-if (!IsHedgingAccount())
-{
-   Print("NeoFL STRADDLE skipped: account is not hedging mode.");
-   return false;
-}
-```
-
-A straddle needs a long and a short open simultaneously on one symbol. That requires a
-**hedging** account. On a **netting** account the opposite order does not create a second
-position — it reduces or closes the first one.
-
-The guard is correct, and refusing is the right behavior. But the consequence is that on a
-netting account the entire recovery architecture never engages, and the only evidence is
-one line in the Experts log. Everything else looks like a system that simply never found a
-setup.
-
-This connects directly to **D-002**: absence of a signal must itself be an observable
-event. A recovery system that cannot run should say so loudly and continuously, not once.
-
-**Action:** confirm whether the live/demo account is hedging or netting. If netting, the
-straddle design needs rethinking regardless of implementation quality.
+The observer publishes `HEARTBEAT`; **nothing reads it**. Under Option B the EA would have
+no way to distinguish "observer says hold" from "observer is dead". Per **D-002**, absence
+of a signal must be an observable event: the EA must treat a stale heartbeat as
+`DATA_UNAVAILABLE` and refuse to depend on basket state, rather than silently continuing.
 
 ---
 
-## What the v2 Straddle Engine must inherit — and must not
+## Carried forward from the earlier analysis
 
-**Inherit:** the dynamic straddle sizing from actual floating loss and entry gap, basket
-P/L as exit authority, the published diagnostic values
-(`STRADDLE_REQUIRED_LOTS`, `BASKET_PNL`, `BASKET_BE_PRICE`, `STRADDLE_COVERAGE`).
+Still present in the LIVE build:
 
-**Do not inherit:**
-- comment-based position identity (Defect 2)
-- a silent skip when the account cannot support the strategy (Defect 3)
-- shared magic numbers across roles within one bucket
+- **Comment-based identity.** Main and straddle share magic `26081401`; the only
+  discriminator is `StringFind(comment, "NEOFL STRADDLE")`. Comments are not reliable
+  broker state. Worse, the main-position scan uses the same test inverted, so a stripped
+  comment makes the straddle be mistaken *for* the main trade.
+- **Hedging requirement.** A straddle needs simultaneous long and short, so a netting
+  account cannot run this at all — announced once in the log, then silence.
 
-**Open question for the product owner:** which symptom was actually observed — no straddle
-opening at all, a straddle opening but the observer not reporting it, or wrong basket
-numbers? Each points at a different defect above.
+---
+
+## Binding constraints for the v2 Straddle Engine (step 7)
+
+1. **One basket authority.** Exactly one component computes basket P/L and exactly one
+   consumes it. Never two writers to the same state.
+2. **No cross-component state via string-keyed globals without a contract.** If global
+   variables are the transport, the key prefix is defined in one shared header that both
+   sides include — never typed twice.
+3. **Identity by magic number or a persisted ticket registry**, never by comment.
+4. **The straddle carries a stop from the moment it opens.** An unprotected recovery leg
+   larger than the position it rescues is not a hedge.
+5. **Consumers verify liveness.** A stale heartbeat is `DATA_UNAVAILABLE`, and the engine
+   declines rather than assuming.
+6. **At basket zero: close the main, keep the straddle.** As the canon states, and as the
+   bridge currently does not.
