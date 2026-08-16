@@ -137,3 +137,63 @@ This is the house pattern. Every subsequent Core engine follows it.
    against historical data without touching a live account — entirely within D-001.
 4. This grants no authority to correct what it finds. Findings are reported; remediation still flows
    through human approval per D-001.
+
+---
+
+## D-003 — Sessions are global; gold's day spans Asian open to American close
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+**Supersedes:** the US-only session assumption in the first Session engine build
+
+### Decision
+
+Session timing is a **global** concern, not a US one. The system must know the trading
+hours of every market it touches.
+
+- **Gold trades in every zone.** Its trading day **starts with the Asian session and ends
+  with the American session.**
+- **Global major indices each have their own hours** — the system must know each, not
+  apply one schedule to all.
+
+### Why the first build was wrong
+
+`NeoFL_Session.mqh` modelled only the US cash session (09:30–16:00 ET). That is correct for
+US indices and wrong for everything else:
+
+- Gold would appear "closed" for the roughly 14 hours a day it is actively traded in Asia
+  and Europe.
+- DAX, FTSE and Nikkei would be evaluated against New York's clock.
+
+### The hard part: DST is not one rule
+
+Each region switches on different dates, and one does not switch at all. Applying US dates
+globally is wrong for several weeks a year — precisely the weeks where a session boundary
+silently shifts by an hour and nobody notices until a trade fires at the wrong time.
+
+| Region | DST rule |
+|---|---|
+| US | second Sunday March → first Sunday November |
+| EU / UK | last Sunday March → last Sunday October |
+| Australia | first Sunday October → first Sunday April (southern hemisphere, inverted) |
+| Japan | **no DST at all** |
+
+There are also weeks where US and EU have switched but the other has not, so the
+London–New York overlap moves. That overlap is the highest-liquidity window of the day, so
+getting it wrong matters.
+
+### What this changes in practice
+
+1. Sessions are defined per market: local open/close, base UTC offset, and DST rule.
+2. All comparisons happen in GMT. Broker server time remains untrusted.
+3. The gold trading day is derived: **Asian session open → American session close.**
+4. Session overlaps are exposed, because liquidity concentrates there.
+5. Indices consult their own exchange's hours, never a shared default.
+
+### Consequences
+
+- The Jobbing strategy's US-open opening range is unaffected — it still keys off New York,
+  which is now one market among several rather than the only one modelled.
+- Strategies ask "is my market open?" rather than assuming. A strategy that cannot answer
+  that for its instrument is not ready to trade it.

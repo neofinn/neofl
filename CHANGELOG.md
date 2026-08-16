@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-08-16 (D-003) — global sessions: gold spans Asian open to American close
+
+Corrects a wrong assumption in the first Session build, which modelled only the US cash
+session. That is right for US indices and wrong for gold and every non-US venue.
+
+### Added
+- `CORE/NeoFL_Session/NeoFL_GlobalSessions.mqh` — six venues (Sydney, Tokyo, Hong Kong,
+  Frankfurt, London, New York), four DST rules, dealing-session windows, overlap detection,
+  the gold trading day, and per-index venue lookup.
+- `python/neofl_core/sessions_global.py` + `tests/unit/test_sessions_global.py` — reference
+  mirror, 18 tests.
+
+### Why this needed care
+DST is not one rule, and one major market has none:
+
+| Region | Rule |
+|---|---|
+| US | 2nd Sunday March → 1st Sunday November |
+| EU / UK | last Sunday March → last Sunday October |
+| Australia | 1st Sunday October → 1st Sunday April (inverted, southern hemisphere) |
+| Japan | none |
+
+For several weeks a year the regions are genuinely out of step — in mid-March the US has
+switched and the EU has not; in late October the reverse. During those weeks London and
+New York sit 4 hours apart instead of 5, so the **London/New York overlap moves**. That
+overlap is the deepest liquidity window of the day, and a single-rule implementation
+trades the wrong one without complaining. Tests assert both divergence windows explicitly.
+
+### Also modelled
+- **Tokyo and Hong Kong lunch breaks.** A venue model that ignores them reports liquidity
+  that is not there.
+- **Week boundaries in GMT** (Friday 22:00 → Sunday 22:00), because brokers disagree about
+  when the week starts.
+- **Unknown indices return "unknown", never "closed"** — an unrecognised symbol must not
+  silently inherit New York's hours.
+
+### Verified
+- DST boundary dates asserted against the real calendar for 2025–2027, in both languages.
+- MQL5 compile: 0 errors, 0 warnings. Python: 78 tests pass.
+- NOT verified: behavior on a live terminal — run `NeoFL_CoreSelfTest` in MT5.
+
+Trading-behavior change: no (reports session state; imposes no trading window)
+
 ## 2026-08-16 (build step 3 complete) — Calendar engine
 
 ### Added

@@ -12,6 +12,7 @@
 #include "../NeoFL_Session/NeoFL_Session.mqh"
 #include "../NeoFL_SymbolResolver/NeoFL_SymbolResolver.mqh"
 #include "../NeoFL_Calendar/NeoFL_Calendar.mqh"
+#include "../NeoFL_Session/NeoFL_GlobalSessions.mqh"
 
 input string InpTestSymbol = "";  // blank = use the chart symbol
 
@@ -168,6 +169,61 @@ void OnStart()
    // The distinction that matters: "cannot see" must never read as "all clear".
    Check(!(calQ == NEOFL_DATA_UNAVAILABLE && cal.verdict == NEOFL_VERDICT_PROCEED),
          "unreachable calendar never reports PROCEED");
+
+   //--------------------------------------------------------------
+   Print("");
+   Print("[6] Global sessions (D-003) - gold trades Asian through American");
+
+   const datetime nowGmt = TimeGMT();
+   PrintFormat("  offsets now: Tokyo UTC%+.0f  London UTC%+.0f  NewYork UTC%+.0f",
+               NeoFLGS_MarketOffset(NEOFL_MKT_TOKYO,   nowGmt),
+               NeoFLGS_MarketOffset(NEOFL_MKT_LONDON,  nowGmt),
+               NeoFLGS_MarketOffset(NEOFL_MKT_NEWYORK, nowGmt));
+   PrintFormat("  gold phase now: %s", NeoFLGS_GoldDayPhase(nowGmt));
+   Print("    ", NeoFLDecision_ToString(NeoFLGS_Assess(symbol)));
+
+   // DST boundary dates are calendar facts; assert rather than recompute.
+   Check(NeoFLGS_NthWeekday(2026, 3, 0, 2) == 8 && NeoFLGS_NthWeekday(2026, 11, 0, 1) == 1,
+         "US DST 2026: 8 Mar -> 1 Nov");
+   Check(NeoFLGS_LastWeekday(2026, 3, 0) == 29 && NeoFLGS_LastWeekday(2026, 10, 0) == 25,
+         "EU DST 2026: 29 Mar -> 25 Oct");
+   Check(NeoFLGS_LastWeekday(2027, 3, 0) == 28 && NeoFLGS_LastWeekday(2027, 10, 0) == 31,
+         "EU DST 2027: 28 Mar -> 31 Oct");
+
+   // The weeks a single-rule implementation gets wrong.
+   const datetime mar20 = NeoFLGS_Gmt(2026, 3, 20, 12);
+   Check(NeoFLGS_IsDst(NEOFL_DST_US, mar20) && !NeoFLGS_IsDst(NEOFL_DST_EU, mar20),
+         "20 Mar 2026: US on DST, EU not yet - offsets diverge");
+   const datetime oct28 = NeoFLGS_Gmt(2026, 10, 28, 12);
+   Check(NeoFLGS_IsDst(NEOFL_DST_US, oct28) && !NeoFLGS_IsDst(NEOFL_DST_EU, oct28),
+         "28 Oct 2026: EU back to standard, US not yet");
+
+   Check(!NeoFLGS_IsDst(NEOFL_DST_NONE, NeoFLGS_Gmt(2026, 7, 1, 12)),
+         "Japan never observes DST");
+   Check(NeoFLGS_IsDst(NEOFL_DST_AU, NeoFLGS_Gmt(2026, 1, 15, 12)) &&
+         !NeoFLGS_IsDst(NEOFL_DST_AU, NeoFLGS_Gmt(2026, 7, 15, 12)),
+         "Australia DST is inverted (southern hemisphere)");
+
+   // Gold's day must span all three regions.
+   Check(NeoFLGS_IsSessionOpen(NEOFL_SESSION_ASIAN,   NeoFLGS_Gmt(2026, 6, 10, 23)),
+         "23:00 GMT - Asian session opens gold's day");
+   Check(NeoFLGS_InOverlap(NeoFLGS_Gmt(2026, 6, 10, 14)),
+         "14:00 GMT - London/New York overlap (deepest liquidity)");
+   Check(!NeoFLGS_GoldDayActive(NeoFLGS_Gmt(2026, 6, 13, 12)),
+         "Saturday - gold day inactive");
+
+   // Tokyo breaks for lunch; a venue model ignoring that reports absent liquidity.
+   Check(!NeoFLGS_IsMarketOpen(NEOFL_MKT_TOKYO, NeoFLGS_Gmt(2026, 6, 10, 3)),
+         "12:00 Tokyo - lunch break observed");
+
+   // Each index consults its own venue, never New York's by default.
+   ENUM_NEOFL_MARKET venue;
+   Check(NeoFLGS_IndexVenue("GER40", venue) && venue == NEOFL_MKT_FRANKFURT,
+         "GER40 -> Frankfurt");
+   Check(NeoFLGS_IndexVenue("JP225", venue) && venue == NEOFL_MKT_TOKYO,
+         "JP225 -> Tokyo");
+   Check(!NeoFLGS_IndexVenue("WHATEVER99", venue),
+         "unknown index does not inherit New York hours");
 
    //--------------------------------------------------------------
    Print("");
