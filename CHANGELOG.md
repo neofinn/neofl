@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-08-16 (build step 3 complete) — Calendar engine
+
+### Added
+- `CORE/NeoFL_Calendar/NeoFL_Calendar.mqh` — economic events and news proximity, normalized per
+  canon (event id, name, country, currency, importance, scheduled time, forecast/previous/actual,
+  seconds to event). Shared by the trading engine and the Observer Network rather than reimplemented
+  per EA, so an observer can explain *"this trade occurred around event X"*.
+
+### Design notes
+- **"Cannot see the calendar" is never conflated with "nothing scheduled."** MT5's calendar API is
+  absent in the Strategy Tester and returns nothing when disconnected; that is `DATA_UNAVAILABLE`,
+  and an unreachable calendar can never report `PROCEED`. The self-test asserts this directly.
+- `NeoFLCal_SecondsToNextHighImpact()` returns `-1` for "cannot tell" and `INT_MAX` for "nothing
+  scheduled". Callers must distinguish them; treating `-1` as "far away" is the mistake the split
+  return values exist to make obvious.
+- The module reports proximity but does **not** impose a stand-aside window. How close is too close
+  differs between a scalper and a swing engine, so that threshold belongs to the strategy.
+
+### Verified
+- MQL5 compile: 0 errors, 0 warnings. Both self-test packages rebuilt and redeployed to
+  `MQL5/Scripts/NeoFL/`.
+- Python suite: 38 tests pass.
+- NOT verified: live calendar behavior against a connected terminal — needs a human to run the script.
+
+Build step 3 (Market Data + Session + Calendar) is now complete. Next: step 4, Risk + Capital.
+
+Trading-behavior change: no
+
 ## 2026-08-16 (build step 3) — Market Data, Session, Data Quality; rooms; packaging tool
 
 ### Added — Core

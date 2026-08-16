@@ -11,6 +11,7 @@
 #include "NeoFL_MarketData.mqh"
 #include "../NeoFL_Session/NeoFL_Session.mqh"
 #include "../NeoFL_SymbolResolver/NeoFL_SymbolResolver.mqh"
+#include "../NeoFL_Calendar/NeoFL_Calendar.mqh"
 
 input string InpTestSymbol = "";  // blank = use the chart symbol
 
@@ -144,6 +145,29 @@ void OnStart()
          "unusable feed yields BLOCKED with a stated reason");
    Check(StringLen(blocked.reason) > 0,
          "every decision carries a reason - silence is not a valid outcome");
+
+   //--------------------------------------------------------------
+   Print("");
+   Print("[5] Calendar - reachable, or knowingly blind?");
+
+   string calDetail = "";
+   const ENUM_NEOFL_DATA_QUALITY calQ = NeoFLCal_Probe(calDetail);
+   PrintFormat("  probe: %s - %s", NeoFLData_QualityName(calQ), calDetail);
+
+   NeoFLDecision cal = NeoFLCal_Assess(symbol);
+   Print("    ", NeoFLDecision_ToString(cal));
+
+   const int secs = NeoFLCal_SecondsToNextHighImpact();
+   if(secs == -1)
+      Print("  next high-impact: UNKNOWN - calendar not visible (expected in Strategy Tester)");
+   else if(secs == INT_MAX)
+      Print("  next high-impact: none scheduled in the lookahead window");
+   else
+      PrintFormat("  next high-impact: in %d seconds (%d minutes)", secs, secs / 60);
+
+   // The distinction that matters: "cannot see" must never read as "all clear".
+   Check(!(calQ == NEOFL_DATA_UNAVAILABLE && cal.verdict == NEOFL_VERDICT_PROCEED),
+         "unreachable calendar never reports PROCEED");
 
    //--------------------------------------------------------------
    Print("");
