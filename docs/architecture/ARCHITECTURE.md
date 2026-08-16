@@ -1,125 +1,195 @@
-# NeoFL Architecture
+# NeoFL Architecture (v2)
 
-Derived from the master spec (`docs/product/MASTER_SPEC_v1.0.md`). Where this document and the master
-spec disagree, the master spec wins and this document is the bug.
+Derived from the canon in `docs/product/`. Where this document and the canon disagree, the canon
+wins and this document is the bug.
+
+Canon, in authority order:
+1. `HANDOFF_DIRECTIVE.md` — governs how version conflicts are resolved.
+2. `MASTER_ARCHITECTURE_v2.md` — strategy family and core architecture.
+3. `ENGINE_OBSERVER_SCRIPTS_LAYER.md` — engine, observer, and scripts layers.
+4. `MASTER_UNIVERSE_CANON.md` — universe structure and documentation index.
+5. `MASTER_SPEC_v1.0.md` — **superseded**, historical reference only.
+
+## The central idea
+
+NeoFL is a platform, not a collection of EAs. One shared engine; seven independent strategies that
+consume it. The golden rule:
+
+> **Don't duplicate infrastructure. Don't merge strategy logic.**
+
+A strategy answers *what should we trade and why*. The Core answers *can we trade it, how much, how
+do we execute it, how do we manage it*. The Observer answers *what is happening*. The external brain
+answers *what does it mean and what could be improved*.
+
+The EA layer is therefore **thin** — an EA wires a strategy to the Core and does little else.
 
 ## System shape
 
 ```
-                 EXTERNAL DATA SOURCES
-        (CME futures/order-flow, TradingView, Calendar, News)
-                          |
-                     DATA GATEWAY            [Python: external-data/]
-                          |
-                  NORMALIZATION LAYER        common schema, §20
-                          |
-                   REAL-TIME STATE           [Redis]
-                          |
-                      MT5 BRIDGE             [mt5/DataBridge/]  validate/timestamp/map — NEVER decides
-                          |
-              +-----------+-----------+
-              |                       |
-          TREND EA                 ARK EA    [mt5/TrendEA/, mt5/ARKEA/]
-       M5 + M15 + M30           M15 event engine
-              |                       |
-             M1                      M1
-              |                       |
-        Trend trades             ARK trades
-              +-----------+-----------+
-                          |
-                    SHARED STATE              execution-slot protocol, §12
-                          |
-                        MT5                   execution boundary
+        EXTERNAL SOURCES  (MT5, TradingView, PineConnector, external APIs, Calendar)
+                    |
+            NEOFL DATA ENGINE
+            normalization · validation · instrument resolver
+            market data · session · calendar
+                    |
+            NEOFL CORE ENGINE
+            signal · risk · auto-capital · execution · position
+            bucket · straddle · stop/BE · trailing · trade state
+            logging · diagnostics
+                    |
+      +-------------+--------------+
+      |             |              |
+ STRATEGY EAs   OBSERVER NETWORK  SCRIPTS
+      |             |              (timing, data, backtest, diagnostics)
+ ARK · JOBBING · PRICE ACTION      |
+ GOLD · FX · BTC · INDICES    Telemetry / event bus
+                                   |
+                          EXTERNAL AGENTIC BRAIN
+                          analysis · diagnostics · recommendations
+                                   |
+                          controlled interface -> config -> EA
 ```
 
-## Non-negotiable boundaries
+## Strategy separation
 
-These come straight from the spec and constrain every later decision:
+Seven strategies, each its own EA with its own signal engine. They share Core, Risk, Execution,
+Bucket, Straddle, Stops, Trailing, and Logging — never signal logic.
 
-1. **Trend and ARK are separate EAs.** Not a monolith with two modules. The legacy GOLD 5.x/6.x line
-   is monolithic and must be split rather than extended (§7).
-2. **MQL5 is the only execution authority.** Python, the gateway, and any AI component are advisory.
-   Nothing external may bypass risk controls or place orders (§21, §22, §25).
-3. **The Data Bridge makes no trading decisions.** It validates, timestamps, maps symbols, and exposes
-   state. That is all (§21).
-4. **No LLM gets live order authority.** The Agentic Brain is advisory output only (§25).
-5. **No strategy conflict engine.** Coordination is a lightweight shared execution-state protocol,
-   nothing more (§12).
-6. **Symbol mapping is configuration, never hard-coded in strategy logic** (§14).
+| Strategy | Nature | Notes |
+|---|---|---|
+| **ARK / Liquid Flow** | liquidity flow + market structure | Aimed at liquid indices (US500/SPX, US100/NSX, US30). Needs external data. |
+| **Jobbing** | US-open opening-range breakout | First M15 candle is the range. Separate EA from ARK. |
+| **Price Action** | structure / swings / BOS / CHOCH | Independent of ARK despite shared structure tooling. |
+| **Gold** | standalone gold strategy | Symbol resolution is the critical piece. |
+| **FX** | asset-specific | FX assumptions stay in the FX module. |
+| **BTC** | asset-specific | Must not inherit FX/Gold session, spread, or tick assumptions. |
+| **Indices** | US500 / US100 / US30 | CFD feed may be insufficient; external data is architectural. |
 
-## Trend / ARK coordination
+Identities that must never blur (handoff directive):
+`ARK ≠ Jobbing · Jobbing ≠ Price Action · Gold ≠ FX · FX ≠ BTC · Indices ≠ Gold · Observer ≠ Strategy · External AI ≠ Execution Engine`
 
-The single piece of shared state between the two EAs. ARK reserves the execution slot *before*
-sending its order — this is the fix for the historical race where both engines executed simultaneously.
-
-```
-ARK_STATE:  0 IDLE | 1 EVENT_DETECTED | 2 PRE_EXECUTION_LOCK
-            3 POSITION_ACTIVE | 4 EXITING | 5 ERROR
-
-ARK_DIRECTION:  -1 SHORT | 0 NONE | +1 LONG
-```
+## Jobbing — current opening logic
 
 ```
-ARK detects qualified event
-  -> ARK_STATE = PRE_EXECUTION_LOCK
-  -> TREND blocks NEW entries
-  -> ARK sends order
-       success -> POSITION_ACTIVE
-       failure -> error/release state
-  -> ARK manages position -> closes
-  -> ARK_STATE = IDLE
-  -> TREND resumes NEW entries
+US market open -> FIRST M15 candle -> high/low = opening range
+    -> M5 execution structure -> breakout -> CHOCH confirmation -> direction -> entry
 ```
 
-Two rules that are easy to get wrong:
+The earlier **three-M15-candle** concept is obsolete. One candle. Jobbing needs a dedicated
+US-session timing module rather than broker/server time.
 
-- The lock blocks **new Trend entries only**. Existing Trend positions are *not* closed because ARK
-  saw an event (§12).
-- Every path out of `PRE_EXECUTION_LOCK` must release the lock, including failures and errors. A
-  wedged lock is a permanent deadlock, which §13 forbids. Whatever transport carries this state needs
-  a staleness timeout as a backstop.
+## Bucket and Straddle — the recovery architecture
 
-Transport is undecided. MT5 global variables (the legacy Observer/MasterBrain approach) are the
-obvious low-friction option for two EAs in one terminal. To be settled in Phase 3.
+This is the piece most easily got wrong, and the canon flags it as critical.
 
-## Engine responsibilities
+A **bucket** is a portfolio of related positions (original trade + straddle + any linked positions),
+tracking aggregate floating P/L, breakeven, zero-floating level, recovery state, runner state.
+Bucket P/L and individual trade P/L are different concepts.
 
-**Trend EA** — short-term intraday. M5 identifies trend (primary), M15 confirms direction, M30 judges
-whether the trend survives, M1 times execution and trails. Emits `BULLISH | BEARISH | NEUTRAL` plus
-confidence. Explicitly must *not* accrue slow confirmation layers that leave it idle (§8, §9).
+The straddle's **initial SL is the straddle trade's own breakeven — not the bucket's breakeven.**
+The transition at bucket zero must be explicit:
 
-**ARK EA** — independent event engine. Liquidity, sweeps, BOS, CHOCH, SMC, supply/demand,
-displacement, order blocks. M15 for event context, M1 for execution. ARK need not agree with Trend
-and may trade alone (§10, §11).
+```
+Straddle opens -> initial SL = straddle's own BE
+    -> monitor whole bucket
+    -> bucket floating P/L reaches 0          <- trigger
+    -> compute bucket zero-floating price
+    -> move straddle SL to that level
+    -> close the original losing trade
+    -> straddle survives as the profit runner
+    -> trail -> exit
+```
 
-> ⚠️ The ARK detection mathematics are **not specified anywhere in the source or the spec**. Legacy
-> `ARKSignal()` is an empty stub; the v3.00 backtest "ARK" is an unrelated opening-range strategy.
-> Phase 2 cannot complete without the product owner supplying these rules. See `SOURCE_INVENTORY.md`.
+State machines, to be implemented explicitly rather than as scattered booleans:
 
-## Live vs replay
+```
+Trade:     CREATED -> PENDING -> OPEN -> MANAGED -> BREAKEVEN -> TRAILING -> CLOSING -> CLOSED
 
-External APIs are not available inside the MT5 Strategy Tester, so the same strategy logic must run
-against two data paths: live gateway state, and a replay engine feeding historical external data in
-the same normalized schema (§23). Designing for this from the start is cheaper than retrofitting it —
-strategy code must never call an external API directly.
+Straddle:  STRADDLE_NONE -> STRADDLE_PENDING -> STRADDLE_OPEN -> STRADDLE_RECOVERY
+           -> BUCKET_ZERO_REACHED -> STRADDLE_PROTECTED -> ORIGINAL_CLOSED
+           -> STRADDLE_RUNNER -> TRAILING -> STRADDLE_CLOSED
+```
 
-## Storage
+Explicit states prevent closing the original too early, moving SL prematurely, reopening the straddle
+repeatedly, treating a closed straddle as active, or miscomputing the zero-floating level.
 
-- **PostgreSQL** — history, events, trades, logs, strategy states.
-- **Redis** — live state: `ARK_STATE`, `TREND_STATE`, news, CME.
+## Data quality is explicit
 
-Neither is needed before Phase 5. Do not stand them up early (§4).
+Every data source carries a quality state:
 
-## Phases
+```
+DATA_OK · DATA_DELAYED · DATA_INCOMPLETE · DATA_UNAVAILABLE · DATA_INVALID
+```
 
-0 workstation · **1 repo + inventory + AI instructions** · 2 formal Trend/ARK specs ·
-3 standalone Trend + ARK · 4 MT5 bridge · 5 data gateway · 6 CME/TradingView/calendar ·
-7 replay engine · 8 Agentic Brain · 9 automated research · 10 demo execution · 11 human approval ·
-12 controlled live.
+MT5 CFD data does **not** necessarily contain everything ARK and the index strategies need. When
+required data is missing the answer is `DATA_UNAVAILABLE → NO TRADE`. Never guess, never fabricate,
+never trade on manufactured values.
 
-Phase 1 is in progress. The Agentic Brain is not to be jumped to (§31).
+## Symbol resolution
+
+Semantic base-symbol matching, not substring search.
+
+```
+XAUUSD · XAUUSDm · XAUUSD.a · XAUUSD.pro · PREFIX_XAUUSD_SUFFIX · GOLD   -> GOLD
+BTCXAU                                                                   -> INVALID GOLD
+```
+
+`BTCXAU` contains `XAU` and is not gold. The resolver returns an `InstrumentDescriptor`
+(asset class, base symbol, broker symbol, tick size, tick value, point, contract size, digits,
+trading sessions).
+
+## Observer Network
+
+A monitoring and intelligence layer — never a replacement for deterministic execution. It observes
+market, trading, account, and system state, and emits **state transitions**, not just snapshots:
+
+```
+SIGNAL_CREATED -> ORDER_SENT -> ORDER_FILLED -> POSITION_OPEN -> BUCKET_CREATED
+-> STRADDLE_CREATED -> RECOVERY -> BUCKET_ZERO -> ORIGINAL_CLOSED -> STRADDLE_RUNNER
+-> TRAILING -> POSITION_CLOSED -> BUCKET_CLOSED
+```
+
+The observer must understand buckets, not merely report `BUY XAUUSD 0.10`.
+
+Confirmed latest components: `NeoFL_Observer_Network_v2_00.mq5`, `NeoFL_Observer_Core_v2_00.mqh`.
+
+## External Agentic Brain
+
+Sits outside deterministic execution and must never become a single point of failure:
+
+```
+AI offline -> NeoFL continues deterministic trading
+```
+
+Recommendations flow `AI → validation/policy → approval → configuration → EA`. The AI never modifies
+live trading logic directly.
+
+## Packaging — hard rule
+
+Every deployable EA ships as one self-contained folder: the `.mq5` plus every `.mqh` and support file
+it requires. No dependency hunts across unrelated folders.
+
+```
+DEPLOYMENTS/NeoFL_ARK/  ->  NeoFL_ARK.mq5 + required .mqh + support files
+```
+
+## Build order
+
+The canon's implementation sequence. Strategies are consumers of a stable engine, so the engine
+comes first:
+
+```
+1  Core                    7  Straddle Engine        13  Gold
+2  Symbol/Instrument       8  Stop / BE / Trailing   14  FX
+3  Market Data + Session   9  Observer / Logging     15  BTC
+   + Calendar             10  ARK                    16  Indices
+4  Risk + Capital         11  Jobbing                17  External Data / Agentic Brain
+5  Execution + Position   12  Price Action
+6  Bucket Engine
+```
 
 ## Current state
 
-Scaffolding and legacy preservation only. No Trend EA, no ARK EA, no bridge, no gateway. Everything
-under `legacy/` is reference material and none of it is the target architecture.
+Repository scaffolding, preserved legacy source, and canon documentation only. **No Core engine
+module has been written yet.** Everything under `legacy/` is historical reference — see
+`SOURCE_INVENTORY.md` for what each family is and, importantly, what it is not.

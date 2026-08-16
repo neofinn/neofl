@@ -1,4 +1,4 @@
-"""The repository must keep the shape and safety properties the master spec requires.
+"""The repository must keep the shape and safety properties the v2 canon requires.
 
 Cheap structural guards so drift is caught by the suite rather than by review.
 """
@@ -8,27 +8,20 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# v2 canon: shared Core, seven independent strategies, observer, scripts, external brain.
+CORE_ENGINES = [
+    "Core", "Engine", "Risk", "AutoCapital", "Execution", "Position",
+    "Bucket", "Straddle", "Stop", "Breakeven", "Trailing", "TradeState",
+    "SymbolResolver", "MarketData", "Session", "Calendar", "DataValidation",
+    "Logger", "Diagnostics",
+]
+
+STRATEGIES = ["ARK", "JOBBING", "PRICE_ACTION", "GOLD", "FX", "BTC", "INDICES"]
+
 REQUIRED_DIRECTORIES = [
-    "docs/product",
-    "docs/architecture",
-    "docs/ai",
-    "strategies/trend",
-    "strategies/ark",
-    "mt5/TrendEA",
-    "mt5/ARKEA",
-    "mt5/DataBridge",
-    "external-data/CME",
-    "external-data/TradingView",
-    "external-data/Calendar",
-    "external-data/News",
-    "agentic-brain",
-    "backtesting/replay",
-    "backtesting/historical-data",
-    "tests",
-    "infrastructure",
-    "scripts",
-    "monitoring",
-    "legacy",
+    "docs/product", "docs/architecture", "docs/ai",
+    "OBSERVER", "SCRIPTS", "DATA", "EXTERNAL_BRAIN", "DEPLOYMENTS",
+    "BACKTEST", "python", "tests", "legacy",
 ]
 
 REQUIRED_FILES = [
@@ -36,20 +29,36 @@ REQUIRED_FILES = [
     "CLAUDE.md",
     "CHANGELOG.md",
     ".gitignore",
+    "docs/product/HANDOFF_DIRECTIVE.md",
+    "docs/product/MASTER_ARCHITECTURE_v2.md",
+    "docs/product/ENGINE_OBSERVER_SCRIPTS_LAYER.md",
+    "docs/product/MASTER_UNIVERSE_CANON.md",
     "docs/product/MASTER_SPEC_v1.0.md",
     "docs/architecture/ARCHITECTURE.md",
     "docs/architecture/SOURCE_INVENTORY.md",
     "docs/ai/DEVELOPMENT_WORKFLOW.md",
 ]
 
-# Spec section 26: these must never be committable.
 SECRET_PATTERNS = [".env", "*.key", "*.pem", "secrets/"]
 
-# Spec section 14: gold only.
+# Canon: BTCXAU contains "XAU" but is not gold. Must never appear as a tradable symbol.
 FORBIDDEN_INSTRUMENTS = ["BTCXAU", "ETHXAU"]
 
 
 class RepositoryContractTest(unittest.TestCase):
+    def test_core_engine_directories_exist(self):
+        for engine in CORE_ENGINES:
+            with self.subTest(engine=engine):
+                self.assertTrue((REPO_ROOT / "CORE" / f"NeoFL_{engine}").is_dir())
+
+    def test_every_strategy_has_module_backtest_and_deployment(self):
+        """Seven independent strategies, each independently backtestable and deployable."""
+        for strategy in STRATEGIES:
+            with self.subTest(strategy=strategy):
+                self.assertTrue((REPO_ROOT / "STRATEGIES" / strategy).is_dir())
+                self.assertTrue((REPO_ROOT / "BACKTEST" / strategy).is_dir())
+                self.assertTrue((REPO_ROOT / "DEPLOYMENTS" / f"NeoFL_{strategy}").is_dir())
+
     def test_required_directories_exist(self):
         for relative in REQUIRED_DIRECTORIES:
             with self.subTest(directory=relative):
@@ -62,21 +71,25 @@ class RepositoryContractTest(unittest.TestCase):
                 self.assertTrue(path.is_file())
                 self.assertGreater(path.stat().st_size, 0)
 
+    def test_superseded_spec_is_marked_superseded(self):
+        """v1.0 must stay visibly superseded so no agent implements from it."""
+        spec = (REPO_ROOT / "docs" / "product" / "MASTER_SPEC_v1.0.md").read_text(encoding="utf-8")
+        self.assertIn("SUPERSEDED", spec)
+
     def test_gitignore_blocks_secrets(self):
         gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
         for pattern in SECRET_PATTERNS:
             with self.subTest(pattern=pattern):
                 self.assertIn(pattern, gitignore)
 
-    def test_no_forbidden_instruments_outside_legacy(self):
-        """Gold only. Legacy is exempt: it is preserved as-is and never executed."""
+    def test_no_forbidden_instruments_outside_legacy_and_docs(self):
+        """Gold only. Legacy is preserved as-is; docs discuss these symbols deliberately."""
+        exempt = {"legacy", "docs", "tests", ".venv", ".git"}
         searchable = [
             path
             for extension in ("*.py", "*.mq5", "*.mqh", "*.json", "*.yaml", "*.yml")
             for path in REPO_ROOT.rglob(extension)
-            if "legacy" not in path.parts
-            and ".venv" not in path.parts
-            and "tests" not in path.parts
+            if exempt.isdisjoint(path.parts)
         ]
         for path in searchable:
             content = path.read_text(encoding="utf-8", errors="ignore")

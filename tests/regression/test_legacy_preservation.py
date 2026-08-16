@@ -1,7 +1,8 @@
-"""Legacy source is read-only reference material (master spec section 6, 34).
+"""Legacy source is read-only reference material.
 
-These tests fail loudly if preserved source is deleted, or if the files the spec
-warns about go missing before their rules have been extracted.
+The handoff directive requires that superseded work be preserved, never deleted.
+These tests fail loudly if preserved source disappears — especially the files the
+v2 canon identifies as direct ancestors of current architecture.
 """
 
 import unittest
@@ -18,10 +19,14 @@ EXPECTED_FAMILIES = [
     "observer-network",
 ]
 
-# Named directly in master spec section 6 and 34.
-SPEC_NAMED_FILES = [
+# Ancestors of current v2 architecture — the highest-value legacy assets.
+CRITICAL_ANCESTORS = [
+    # Straddle / recovery engine ancestor.
+    "candle-revisit-master-brain/v3.85_BACKTEST_READY_PACKAGE/Include/NeoFL_MasterBrain_v3_85.mqh",
+    # One of the two canon-confirmed latest observer components.
+    "candle-revisit-master-brain/v3.85_BACKTEST_READY_PACKAGE/Include/NeoFL_Observer_Core_v2_00.mqh",
+    # Named ARK, implements today's Jobbing (opening range).
     "ark-jobbing-backtest-v3.00/ARK/NeoFL_ARK_Backtest_v3_00.mq5",
-    "gold-dual-engine-5.x-6.x/NeoFL_GOLD_6.6_ARK_PREEXECUTION_LOCK.mq5",
 ]
 
 
@@ -31,8 +36,8 @@ class LegacyPreservationTest(unittest.TestCase):
             with self.subTest(family=family):
                 self.assertTrue((LEGACY / family).is_dir())
 
-    def test_spec_named_files_preserved(self):
-        for relative in SPEC_NAMED_FILES:
+    def test_critical_ancestors_preserved(self):
+        for relative in CRITICAL_ANCESTORS:
             with self.subTest(file=relative):
                 path = LEGACY / relative
                 self.assertTrue(path.is_file())
@@ -45,6 +50,14 @@ class LegacyPreservationTest(unittest.TestCase):
         for family in EXPECTED_FAMILIES:
             with self.subTest(family=family):
                 self.assertIn(family, inventory)
+
+    def test_inventory_records_the_ark_jobbing_name_collision(self):
+        """The single most misleading thing in legacy/ must stay documented."""
+        inventory = (REPO_ROOT / "docs" / "architecture" / "SOURCE_INVENTORY.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("NeoFL_ARK_Backtest_v3_00.mq5", inventory)
+        self.assertIn("Jobbing", inventory)
 
     def test_legacy_source_count_has_not_shrunk(self):
         sources = list(LEGACY.rglob("*.mq5")) + list(LEGACY.rglob("*.mqh"))
