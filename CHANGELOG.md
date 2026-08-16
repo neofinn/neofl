@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-08-16 (build step 4) — Risk engine
+
+Position sizing and risk validation. The strategy requests risk; Core computes size.
+
+### Added
+- `CORE/NeoFL_Risk/NeoFL_Risk.mqh` — three risk models (fixed lot, percent of equity,
+  percent of balance), hard lot ceiling, exposure and position limits, full broker
+  contract validation, and D-002 provenance on every outcome.
+- `python/neofl_core/risk.py` + `tests/unit/test_risk.py` — reference mirror, 19 tests
+  with hand-computable expected values.
+
+### Three failure modes guarded explicitly
+Each produces a plausible-looking number rather than an error, which is what makes them
+dangerous:
+
+1. **Bad broker metadata** — a zero `tick_value` or `volume_step` is a division waiting
+   to happen. All contract fields are validated before any arithmetic touches them;
+   failure BLOCKS with no size returned.
+2. **Rounding up to the volume step** — volume is always *floored*, never rounded to
+   nearest. A 0.149 requirement becoming 0.15 over-risks silently on every trade. A test
+   asserts the floored size never exceeds the budget across a range of risk percentages.
+3. **Minimum lot exceeding the risk budget** — routine on a small account with a wide
+   stop, not an edge case. $200 equity at 1% is a $2 budget, but the 0.01 minimum over a
+   $5 stop risks $5. The engine **DECLINES** rather than quietly trading the minimum,
+   which would make "risk percent" meaningless. `allow_min_lot_override` exists, defaults
+   to false, and says plainly that it knowingly exceeds the limit.
+
+### Awaiting product approval
+Defaults are marked UNCONFIRMED placeholders, not recommendations:
+- **Risk model** — currently percent-of-equity.
+- **`hard_max_lot = 0.01`** — mirrors the legacy v3.85 hard ceiling, which was a deliberate
+  safety rail but appears nowhere in the v2 canon. Whether it carries forward is a product
+  decision.
+
+### Verified
+- MQL5 compile: 0 errors, 0 warnings. Python: 97 tests pass.
+- Sizing checked against hand-computed values ($10,000 at 1% over a $5 stop = 0.20 lots).
+- NOT verified: behavior against a live broker account.
+
+Trading-behavior change: **yes — this module sizes positions.** No entry, exit or
+direction logic. Risk parameters require product approval before live use.
+
 ## 2026-08-16 (D-003) — global sessions: gold spans Asian open to American close
 
 Corrects a wrong assumption in the first Session build, which modelled only the US cash
