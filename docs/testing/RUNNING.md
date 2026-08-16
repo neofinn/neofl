@@ -113,11 +113,71 @@ Be precise in status reports — an unverified claim about a trading system is w
 - Neither says anything about profitability, broker behavior, fills, or slippage.
 - Never report a backtest that was not actually run, or a trade that was not actually observed.
 
-## Note: MT5 exposes an MCP server
+## MT5 ships built-in MCP servers — CONFIRMED
 
-Build 6090 logs `MCP started on 127.0.0.1:22346` at startup. This may offer a programmatic control
-path beyond config-file invocation. Unexplored — **UNCONFIRMED, do not build against it** until its
-capabilities and auth model are established.
+Probed 2026-08-16 against a running terminal. MetaTrader 5 build 6090 runs **two local MCP servers**,
+both enabled on this machine, plus a built-in AI assistant.
+
+From `config/assistant.ini` (UTF-16LE):
+
+| Section | Endpoint | Enabled |
+|---|---|---|
+| `[MCP.MetaEditor]` | `http://127.0.0.1:22345/mcp` | yes |
+| `[MCP.MetaTrader]` | `http://127.0.0.1:22346/mcp` | yes |
+| `[MCP.Custom]` | `https://www.metatrader.com/mcp` | yes |
+
+Verified server behavior on 22346:
+
+```
+Server: MetaTrader5-MCP
+MCP-Protocol-Version: 2025-06-18
+WWW-Authenticate: Bearer realm="MetaTrader5-MCP"
+```
+
+Auth is genuinely enforced — an invalid bearer token returns `401`. Each endpoint has its own
+168-character API key stored in `assistant.ini`.
+
+The MetaEditor server (22345) did not respond while only the terminal was running; it likely starts
+with MetaEditor.
+
+### Why this matters
+
+A working MCP connection to the MetaTrader server is the most plausible route around the Strategy
+Tester's account requirement, and would give programmatic access to market data, symbols, positions,
+and history without hand-driving the GUI. **This is worth evaluating before building custom bridge
+infrastructure** — it may replace part of the planned MT5 Data Bridge work.
+
+To connect a client, the API key from `[MCP.MetaTrader]` must be supplied as a bearer token. That key
+is a credential: it belongs to the account owner, must be added by them, and must never be committed.
+`.gitignore` already excludes `accounts.ini`; treat `assistant.ini` the same way.
+
+### ⚠️ Risk: the built-in assistant has trade permission
+
+`[Assistant]` on this machine is configured with:
+
+```
+Provider = MQL5.community        Model = MQL5 Lite
+Endpoint = https://api.inferdeck.net
+PermissionsTrade    = 1     <-- AI is permitted to trade
+PermissionsShell    = 0
+PermissionsWeb      = 0
+PermissionsOpposite = 1
+```
+
+`PermissionsTrade = 1` grants MetaTrader's own AI assistant authority to place trades, and it routes
+through a third-party inference endpoint. That is in direct tension with the NeoFL canon:
+
+> Do NOT give an LLM unrestricted live order authority.
+> No AI component should bypass risk controls or human live-deployment approval.
+> External AI must not become a single point of failure.
+
+This is a product-owner decision, not an engineering one. Two things to weigh: whether an AI assistant
+should hold trade permission on an account NeoFL also trades, and whether an unrelated AI acting on
+the same account would corrupt the execution evidence NeoFL's own testing depends on. The setting
+lives in MT5 under Tools → Options.
+
+**UNCONFIRMED and not built against:** the actual tool surface either server exposes. Establishing
+that requires an authenticated `initialize` handshake, which needs the owner's key.
 
 ## Toolchain gaps on this workstation
 

@@ -52,3 +52,6 @@ logs/
 .DS_Store
 .vscode/
 .idea/
+
+# MT5 assistant/MCP config — contains API keys
+assistant.ini
