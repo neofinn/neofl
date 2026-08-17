@@ -1,10 +1,10 @@
-# NeoFL Candle Revisit v3.86 — DEMO
+# NeoFL Candle Revisit v3.86
 
 **The EA executes. The script decides.** Attach both to the same chart.
 
 ```
 NeoFL_MasterBrain_Script_v3_85.mq5   the brain — decides, writes state, never trades
-NeoFL_CandleRevisit_v3_86_DEMO.mq5   the executor — reads state, places orders
+NeoFL_CandleRevisit_v3_86.mq5   the executor — reads state, places orders
 ```
 
 ## What was wrong in v3.85
@@ -56,7 +56,7 @@ an instruction that cannot work:
 1. MT5 → File → Open Data Folder → `MQL5/Experts/`
 2. Copy this whole folder in
 3. Compile **both** `.mq5` files in MetaEditor
-4. On an **XAUUSD demo** chart: attach the **EA**, then attach the **MasterBrain script**
+4. On an **XAUUSD** chart: attach the **EA**, then attach the **MasterBrain script**
 5. Enable AutoTrading
 
 Magic `26081401`, unchanged.
@@ -84,4 +84,23 @@ no recovery mechanism, and in this strategy the basket *is* the risk control.
 - Entry logic, basket management and exits are **unchanged from v3.85**.
 - The straddle still carries no stop loss — that is the v3.85 design (`"no SL orders"`),
   not something introduced here.
-- Refuses to start on a non-demo or netting account.
+- **Refuses to start on a netting account.** The straddle needs a long and short open at
+  once; without it the basket — the only risk control here — cannot function.
+- The demo-account gate was removed at the product owner's instruction (2026-08-16). This
+  build runs on real accounts.
+
+## Before the first live straddle
+
+The straddle instruction path is new in this build and has never placed an order — not in
+a backtest, not on demo. What still protects you:
+
+- **`InpStraddleHardCap = 0.30`** — the circuit breaker. If the brain asks for more, the
+  straddle is *refused*, not capped. Set this to what you can actually afford to hold.
+- **Delta-neutral refusal** — a straddle no larger than the main can never bring the basket
+  to zero, so it is refused rather than opened.
+- **Brain liveness** — if the MasterBrain script stops, no straddle is armed.
+
+Worth doing once: when the first straddle arms, check the `NeoFL STRADDLE:` line in the
+Experts log against the chart before leaving it unattended. It prints the requested lots,
+the executed lots, the main entry, the current price and the gap — enough to verify the
+arithmetic by hand.

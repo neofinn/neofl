@@ -21,7 +21,6 @@ input bool   InpInternalBrain      = false; // false = MasterBrain script is aut
 input int    InpBrainMaxAgeSeconds = 30;    // brain considered dead beyond this
 input double InpStraddleHardCap    = 0.30;  // 0 = uncapped; REFUSES above it, never caps
 input bool   InpStraddleLogSizing  = true;
-input bool   InpAllowLiveAccount   = false; // refuses real-money accounts unless true
 #property version   "3.86"
 #property description "NeoFL integrated M5 execution EA: CTrade is the only execution authority; live Observer/Straddle/Calendar/Fund-Risk state is supplied by one continuous data-feeder script."
 
@@ -2482,19 +2481,6 @@ int OnInit()
    PrintFormat("NeoFL v3.86 startup check | account=%s | margin=%s | server=%s | symbol=%s",
                acct_name, mm_name, AccountInfoString(ACCOUNT_SERVER), _Symbol);
 
-   if(acct!=ACCOUNT_TRADE_MODE_DEMO && !InpAllowLiveAccount)
-   {
-      const string why=StringFormat(
-         "NeoFL v3.86 REFUSED TO START\n"
-         "Account trade mode is %s, not DEMO.\n"
-         "This build changes how the straddle instruction is sourced and has not\n"
-         "been validated on demo. To run it here anyway, set InpAllowLiveAccount=true.",
-         acct_name);
-      Print(why);
-      Comment(why);
-      return INIT_FAILED;
-   }
-
    // D-005: the straddle cannot exist on a netting account, and in this strategy
    // the basket IS the risk control -- so running there would trade unprotected.
    if(mm!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
@@ -2513,14 +2499,22 @@ int OnInit()
    Comment("");
 
    Print("=====================================================");
-   PrintFormat("NeoFL v3.86 | %s | HEDGING | brain=%s | cap=%.2f",
-               acct==ACCOUNT_TRADE_MODE_DEMO?"DEMO":"LIVE(overridden)",
+   PrintFormat("NeoFL v3.86 | %s ACCOUNT | HEDGING | brain=%s | cap=%.2f",
+               acct_name,
                InpInternalBrain?"INTERNAL (EA writes state)":"EXTERNAL SCRIPT",
                InpStraddleHardCap);
    if(!InpInternalBrain)
    {
       Print("  EA IS EXECUTION ONLY. Attach NeoFL_MasterBrain_Script_v3_85 to this chart.");
       Print("  Without it, no straddle will be armed - by design, not by failure.");
+   }
+   if(acct==ACCOUNT_TRADE_MODE_REAL)
+   {
+      PrintFormat("  *** REAL MONEY *** balance %.2f %s | straddle cap %.2f lots",
+                  AccountInfoDouble(ACCOUNT_BALANCE),
+                  AccountInfoString(ACCOUNT_CURRENCY), InpStraddleHardCap);
+      Print("  Straddle sizing path is new in this build. Verify the first straddle's");
+      Print("  arithmetic in the Experts log before leaving this unattended.");
    }
    Print("  Do NOT attach NeoFL_Straddle_Observer_v3_85 - it writes NEOFL_SB_*,");
    Print("  which nothing reads, and duplicates the MasterBrain's work.");
