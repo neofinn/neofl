@@ -55,3 +55,8 @@ logs/
 
 # MT5 assistant/MCP config — contains API keys
 assistant.ini
+
+# database
+*.db
+*.db-wal
+*.db-shm

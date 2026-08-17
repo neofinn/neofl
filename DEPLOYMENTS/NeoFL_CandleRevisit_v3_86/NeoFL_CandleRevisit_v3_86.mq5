@@ -34,6 +34,8 @@ input int    InpBrainMaxAgeSeconds = 30;    // brain considered dead beyond this
 input double InpStraddleCapPctBalance = 2.0;   // max % of balance risked per 1.0 price move
 input double InpStraddleHardCap       = 0.30;  // fixed lot fallback when the % is 0
 input bool   InpStraddleLogSizing  = true;
+input bool   InpTelemetry          = true;  // write state to MQL5/Files/NeoFL for the bridge
+input int    InpTelemetrySeconds   = 5;     // snapshot interval
 #property version   "3.86"
 // Single source of truth for the version shown in logs. #property takes a literal,
 // so this constant must match it -- but every runtime message uses ONLY this, which
@@ -44,6 +46,7 @@ input bool   InpStraddleLogSizing  = true;
 #include <Trade/Trade.mqh>
 #include "NeoFL_Observer_Core_v2_00.mqh"
 #include "NeoFL_MasterBrain_v3_85.mqh"
+#include "NeoFL_Telemetry.mqh"
 
 // -----------------------------------------------------------------------------
 // NeoFL architecture rule v3.66:
@@ -2638,6 +2641,18 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
+   // Telemetry: write-only, throttled, and failure-tolerant. If this cannot write,
+   // trading is unaffected -- observation must never become a dependency of execution.
+   if(InpTelemetry)
+   {
+      static datetime last_tel = 0;
+      if(TimeCurrent() - last_tel >= InpTelemetrySeconds)
+      {
+         last_tel = TimeCurrent();
+         NeoFLTel_State(_Symbol, InpMagic);
+      }
+   }
+
    UpdateCalendarGovernor(false);
    UpdateFundSnapshot();
    UpdateWithdrawalMetrics();
