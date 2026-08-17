@@ -60,3 +60,7 @@ assistant.ini
 *.db
 *.db-wal
 *.db-shm
+
+# Claude Code room worktrees
+.claude/worktrees/
+**/.claude/worktrees/
