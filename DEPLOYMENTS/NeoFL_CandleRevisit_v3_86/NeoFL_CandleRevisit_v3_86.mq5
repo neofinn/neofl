@@ -22,6 +22,10 @@ input int    InpBrainMaxAgeSeconds = 30;    // brain considered dead beyond this
 input double InpStraddleHardCap    = 0.30;  // 0 = uncapped; REFUSES above it, never caps
 input bool   InpStraddleLogSizing  = true;
 #property version   "3.86"
+// Single source of truth for the version shown in logs. #property takes a literal,
+// so this constant must match it -- but every runtime message uses ONLY this, which
+// is why the inherited source could print "v3.83" from a file marked 3.85.
+#define NEOFL_VERSION "3.86"
 #property description "NeoFL integrated M5 execution EA: CTrade is the only execution authority; live Observer/Straddle/Calendar/Fund-Risk state is supplied by one continuous data-feeder script."
 
 #include <Trade/Trade.mqh>
@@ -2478,15 +2482,15 @@ int OnInit()
                           : mm==ACCOUNT_MARGIN_MODE_EXCHANGE       ? "EXCHANGE"
                           : "UNKNOWN("+IntegerToString((int)mm)+")";
 
-   PrintFormat("NeoFL v3.86 startup check | account=%s | margin=%s | server=%s | symbol=%s",
-               acct_name, mm_name, AccountInfoString(ACCOUNT_SERVER), _Symbol);
+   PrintFormat("NeoFL v%s startup check | account=%s | margin=%s | server=%s | symbol=%s",
+               NEOFL_VERSION, acct_name, mm_name, AccountInfoString(ACCOUNT_SERVER), _Symbol);
 
    // D-005: the straddle cannot exist on a netting account, and in this strategy
    // the basket IS the risk control -- so running there would trade unprotected.
    if(mm!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {
       const string why=StringFormat(
-         "NeoFL v3.86 REFUSED TO START\n"
+         "NeoFL v" NEOFL_VERSION " REFUSED TO START\n"
          "Account margin mode is %s, not HEDGING.\n"
          "The recovery straddle needs a long and a short open at once, which this\n"
          "account cannot do. Since the basket is the only risk control in this\n"
@@ -2499,8 +2503,8 @@ int OnInit()
    Comment("");
 
    Print("=====================================================");
-   PrintFormat("NeoFL v3.86 | %s ACCOUNT | HEDGING | brain=%s | cap=%.2f",
-               acct_name,
+   PrintFormat("NeoFL v%s | %s ACCOUNT | HEDGING | brain=%s | cap=%.2f",
+               NEOFL_VERSION, acct_name,
                InpInternalBrain?"INTERNAL (EA writes state)":"EXTERNAL SCRIPT",
                InpStraddleHardCap);
    if(!InpInternalBrain)
@@ -2510,9 +2514,48 @@ int OnInit()
    }
    if(acct==ACCOUNT_TRADE_MODE_REAL)
    {
+      const double bal  = AccountInfoDouble(ACCOUNT_BALANCE);
+      const string ccy  = AccountInfoString(ACCOUNT_CURRENCY);
       PrintFormat("  *** REAL MONEY *** balance %.2f %s | straddle cap %.2f lots",
-                  AccountInfoDouble(ACCOUNT_BALANCE),
-                  AccountInfoString(ACCOUNT_CURRENCY), InpStraddleHardCap);
+                  bal, ccy, InpStraddleHardCap);
+
+      // Exposure relative to THIS account, computed from the broker's own contract
+      // spec rather than assumed. A cap that is prudent on one account can be
+      // account-ending on another; the only way to know is to price it here.
+      const double contract = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+      const double tickval  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      const double ticksize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      PrintFormat("  contract size=%.2f | tick value=%.5f %s | tick size=%.5f",
+                  contract, tickval, ccy, ticksize);
+
+      if(ticksize > 0.0 && tickval > 0.0 && bal > 0.0)
+      {
+         // Cost of a 1.00 price move (one dollar of gold) at each relevant size.
+         const double per_unit_per_lot = tickval / ticksize;
+         const double main_move = per_unit_per_lot * InpLots;
+         const double cap_move  = per_unit_per_lot * InpStraddleHardCap;
+
+         PrintFormat("  a 1.00 move costs: main %.2f lots = %.2f %s (%.1f%% of balance)",
+                     InpLots, main_move, ccy, main_move/bal*100.0);
+         PrintFormat("                     cap  %.2f lots = %.2f %s (%.1f%% of balance)",
+                     InpStraddleHardCap, cap_move, ccy, cap_move/bal*100.0);
+
+         if(cap_move > 0.0)
+            PrintFormat("  straddle cap is wiped out by a %.2f move; main entry by %.2f",
+                        bal/cap_move, main_move>0.0 ? bal/main_move : 0.0);
+
+         // Not a refusal -- sizing is the owner's decision. But an exposure this
+         // large relative to the balance should never pass unremarked.
+         if(cap_move > bal*0.25)
+         {
+            Print("  ------------------------------------------------------------");
+            PrintFormat("  WARNING: at the cap, a 1.00 move is %.0f%% of the balance.",
+                        cap_move/bal*100.0);
+            Print("  Gold routinely moves 10-30 in a day. Consider lowering");
+            Print("  InpStraddleHardCap before the first straddle arms.");
+            Print("  ------------------------------------------------------------");
+         }
+      }
       Print("  Straddle sizing path is new in this build. Verify the first straddle's");
       Print("  arithmetic in the Experts log before leaving this unattended.");
    }
@@ -2529,7 +2572,7 @@ int OnInit()
    ArrayResize(g_levels, 0);
    g_last_bar_time = iTime(_Symbol, InpTimeframe, 0);
 
-   Print("NeoFL Candle Revisit Engine v3.83 initialized. Main EA is the only execution authority; Observer, M3 Straddle, Calendar and Fund-Risk engines are integrated modules.");
+   PrintFormat("NeoFL Candle Revisit Engine v%s initialized. EA is the only execution authority; the MasterBrain script is the decision authority.", NEOFL_VERSION);
    UpdateCalendarGovernor(true);
    DashUpdate();
    return(INIT_SUCCEEDED);
