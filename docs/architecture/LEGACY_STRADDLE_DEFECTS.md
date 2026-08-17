@@ -243,3 +243,73 @@ Still present in the LIVE build:
    declines rather than assuming.
 6. **At basket zero: close the main, keep the straddle.** As the canon states, and as the
    bridge currently does not.
+
+
+---
+
+# CORRECTION — the real defect, found after reading the MasterBrain in full
+
+Two earlier conclusions in this document were wrong. Both are corrected here; the
+originals are left above so the reasoning trail is visible.
+
+## Wrong: "the straddle is sized from an ATR projection"
+
+`NeoFL_MasterBrain_v3_85.mqh` already implements the product owner's gap rule, and its
+own comment says so:
+
+```mql5
+// The coverage distance is the actual entry gap back to the main entry,
+// not an arbitrary ATR projection.
+double entry_gap    = MathAbs(entry-current);
+double required_money = MathAbs(raw_profit)+recovery_cost+cfg.profit_buffer_money;
+required_money       *= MathMax(1.0,cfg.safety_factor);
+double one_lot_gap  = NeoFLMB_MoneyPerLot(symbol,str_ot,current,entry);
+double required     = required_money/one_lot_gap;
+double lots         = NeoFLMB_RoundUpLots(symbol,required,cfg.max_straddle_lot);
+```
+
+That is exactly "how many lots are needed to cover the loss between the main entry and
+the straddle entry". It also does it better than a purely geometric formula, because
+`OrderCalcProfit` uses the broker's own contract size, tick value and currency
+conversion instead of assumed constants, and it includes commission, swap and a buffer.
+
+The ATR projection is in `NeoFL_Observer_Core_v2_00.mqh` — a **different file**.
+
+## The actual defect: two writers, one variable
+
+Both components write the **same global variable**:
+
+| Writer | Cadence | Value written |
+|---|---|---|
+| `NeoFL_MasterBrain_Script_v3_85.mq5` (`InpObserverPrefix="NEOFL_OBS"`) | ~1/second | gap-based — **correct** |
+| EA's internal `NeoFLObs_Update` (`InpObserverPrefix="NEOFL_OBS"`) | **every tick** | ATR projection, and `NeoFLObs_ResetPositionState` writes **0** whenever no main position exists |
+
+Both key resolvers produce the identical string:
+
+```
+NEOFL_OBS_<symbol>_26081401_STRADDLE_LOTS
+```
+
+The EA writes on every tick; the script writes about once a second. **The EA therefore
+overwrites the MasterBrain's correct value far more often than it is written.** The EA
+then reads that key back at `g_observer_straddle_lots=ReadObserverValue("STRADDLE_LOTS")`
+and sizes the straddle from whichever component happened to write last.
+
+The correct number is computed and then clobbered. This is the defect behind the reported
+symptom, and it is invisible in the logs because both values are plausible.
+
+It is also the exact hazard flagged earlier in this document as the reason not to "just
+align the prefixes" — except it was already happening between two components that were
+never meant to share a key.
+
+## The fix applied in v3.86
+
+`DEPLOYMENTS/NeoFL_CandleRevisit_v3_86_DEMO/` moves the MasterBrain formula **into the
+EA**, evaluated from the live position at the moment the straddle arms. The formula is
+unchanged. What changes is that the contested global variable is no longer consulted, so
+there is nothing left to race.
+
+Two refusals were added where the legacy proceeded silently: a straddle no larger than the
+main is delta-neutral and is refused; and a straddle exceeding the hard cap is refused
+rather than capped, since a capped straddle under-covers the gap and the basket would
+never reach zero.

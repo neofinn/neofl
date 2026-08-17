@@ -3,34 +3,20 @@
 //| No NeoFL engine dependencies                                     |
 //+------------------------------------------------------------------+
 #property strict
-input double InpStraddleFixedLot = 0.03; // Legacy fixed lot (used only when mode = LEGACY)
+input double InpStraddleFixedLot = 0.03; // legacy fixed lot (LEGACY mode only)
 
-//=================== v3.86 STRADDLE SIZING ==========================
-// Product owner's rule: the straddle is sized from the lots needed to cover the loss
-// between the MAIN entry and the STRADDLE entry, so the gap always returns to zero.
-//
-//   Bucket zero at distance D past the straddle entry  ->  Vs = Vm * (gap + D) / D
-//
-// Two readings, both fully covering the loss:
-//   RATIO           Vs = Vm*(n+1), recovers in gap/n.  Size FIXED, distance follows gap.
-//                   n=2 gives 0.03 against 0.01 -- identical to the legacy fixed lot.
-//   FIXED_DISTANCE  Vs = Vm*(gap+D)/D.  Distance FIXED, size follows gap.
-//                   Exposure grows without bound as the gap widens -- cap it.
-//
-// A straddle no larger than the main is DELTA NEUTRAL: the legs offset exactly, bucket
-// P/L freezes, and no price ever recovers it. That case is refused, not sized.
+//================= v3.86 STRADDLE SIZING ============================
 enum ENUM_STRADDLE_SIZING
 {
-   STRADDLE_SIZING_RATIO          = 0, // Vs = main*(n+1); recovers in gap/n
-   STRADDLE_SIZING_FIXED_DISTANCE = 1, // Vs = main*(gap+D)/D; recovers within D
-   STRADDLE_SIZING_LEGACY         = 2  // observer projection (v3.85 behaviour)
+   STRADDLE_SIZING_GAP    = 0, // MasterBrain rule: cover the gap loss (default)
+   STRADDLE_SIZING_RATIO  = 1, // fixed multiple of the main lot
+   STRADDLE_SIZING_LEGACY = 2  // read the raced global variable (v3.85 behaviour)
 };
-input ENUM_STRADDLE_SIZING InpStraddleSizing         = STRADDLE_SIZING_RATIO;
-input double               InpStraddleRecoveryRatio  = 2.0;   // RATIO n: 2.0 == legacy 0.03
-input double               InpStraddleRecoveryDist   = 10.0;  // FIXED_DISTANCE D, price units
-input double               InpStraddleHardCap        = 0.30;  // 0 = uncapped. Bounds FIXED_DISTANCE.
-input bool                 InpStraddleLogSizing      = true;  // log every sizing decision
-input bool                 InpAllowLiveAccount       = false; // REFUSES real-money accounts unless true
+input ENUM_STRADDLE_SIZING InpStraddleSizing        = STRADDLE_SIZING_GAP;
+input double               InpStraddleRecoveryRatio = 2.0;
+input double               InpStraddleHardCap       = 0.30;
+input bool                 InpStraddleLogSizing     = true;
+input bool                 InpAllowLiveAccount      = false;
 #property version   "3.86"
 #property description "NeoFL integrated M5 execution EA: CTrade is the only execution authority; live Observer/Straddle/Calendar/Fund-Risk state is supplied by one continuous data-feeder script."
 
@@ -1835,72 +1821,130 @@ bool HasStraddlePosition(ulong &ticket)
 }
 
 //+------------------------------------------------------------------+
-//| v3.86: size the straddle from the ACTUAL gap between the main     |
-//| entry and the straddle entry.                                     |
+//| v3.86: straddle sizing, computed LOCALLY.                         |
 //|                                                                   |
-//| Returns 0.0 when the bucket could not reach zero -- the caller     |
-//| must not open a straddle it cannot recover with.                  |
+//| This is the NeoFL_MasterBrain_v3_85 rule. The FORMULA is           |
+//| unchanged; what changes is WHERE it runs.                         |
+//|                                                                   |
+//| WHY IT MOVED                                                      |
+//| In v3.85 two components wrote the SAME global variable:           |
+//|                                                                   |
+//|   MasterBrain script -> NEOFL_OBS_<sym>_<magic>_STRADDLE_LOTS     |
+//|                         gap-based, ~1/second, CORRECT             |
+//|   EA Observer Core   -> NEOFL_OBS_<sym>_<magic>_STRADDLE_LOTS     |
+//|                         ATR projection, EVERY TICK, and reset to  |
+//|                         0 whenever no main position exists        |
+//|                                                                   |
+//| The EA writes far more often, so it usually overwrote the correct |
+//| value before reading it back. The right number was computed, then |
+//| clobbered. Computing it here removes the shared variable, so      |
+//| there is nothing left to race.                                    |
+//|                                                                   |
+//| THE RULE                                                          |
+//|   need = (|main floating loss| + commission + swap + buffer)      |
+//|          x safety factor                                          |
+//|   per  = what 1.0 lot of the straddle earns travelling from the   |
+//|          straddle entry BACK to the main entry                    |
+//|   lots = ceil(need / per)                                         |
+//|                                                                   |
+//| So when price returns to the main entry the gap loss is covered   |
+//| and the basket sits at or above zero, which is the stated rule.   |
 //+------------------------------------------------------------------+
-double CalculateGapStraddleLots(const double main_volume,
-                                const double main_entry,
-                                const double straddle_entry,
-                                const bool   main_is_long)
+double CalculateGapStraddleLots(const ulong main_ticket)
 {
-   const double gap = main_is_long ? (main_entry - straddle_entry)
-                                   : (straddle_entry - main_entry);
+   if(main_ticket==0 || !PositionSelectByTicket(main_ticket)) return 0.0;
 
-   if(gap <= 0.0 || main_volume <= 0.0)
+   const bool   main_buy   = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+   const double main_entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   const double main_lot   = PositionGetDouble(POSITION_VOLUME);
+   const double raw_profit = PositionGetDouble(POSITION_PROFIT);
+   const double swap_cost  = MathAbs(PositionGetDouble(POSITION_SWAP));
+   const double current    = main_buy ? SymbolInfoDouble(_Symbol,SYMBOL_BID)
+                                      : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   const double entry_gap  = MathAbs(main_entry-current);
+
+   if(entry_gap<=0.0 || raw_profit>=0.0)
    {
       if(InpStraddleLogSizing)
-         PrintFormat("NeoFL STRADDLE SIZING: refused - gap %.5f is not adverse", gap);
+         PrintFormat("NeoFL STRADDLE SIZING: refused - gap %.5f, main P/L %.2f (not adverse)",
+                     entry_gap,raw_profit);
       return 0.0;
    }
 
-   double exact = 0.0;
-   if(InpStraddleSizing == STRADDLE_SIZING_FIXED_DISTANCE)
+   double commission_main=0.0;
+   const ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   if(pid!=0 && HistorySelectByPosition(pid))
    {
-      if(InpStraddleRecoveryDist <= 0.0) return 0.0;
-      exact = main_volume * (gap + InpStraddleRecoveryDist) / InpStraddleRecoveryDist;
-   }
-   else
-   {
-      if(InpStraddleRecoveryRatio <= 0.0) return 0.0;
-      exact = main_volume * (InpStraddleRecoveryRatio + 1.0);
+      const int nd=HistoryDealsTotal();
+      for(int i=0;i<nd;i++)
+      {
+         const ulong d=HistoryDealGetTicket(i);
+         if(d!=0) commission_main += MathAbs(HistoryDealGetDouble(d,DEAL_COMMISSION));
+      }
    }
 
-   const double step = MathMax(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP), 0.01);
-   const double vmin = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
-   // CEIL, not floor: flooring under-covers the gap, so the bucket stops short of
-   // zero and the handover never fires.
-   double lots = MathCeil(MathMax(exact,vmin)/step - 1e-9)*step;
-   lots = NormalizeDouble(lots, 2);
+   double need = MathAbs(raw_profit)+commission_main+swap_cost+InpStraddleProfitBufferMoney;
+   need *= MathMax(1.0,InpStraddleSafetyFactor);
 
-   if(InpStraddleHardCap > 0.0 && lots > InpStraddleHardCap)
+   // Ask the broker what one lot earns over the ACTUAL gap, so contract size,
+   // tick value and currency conversion are its numbers rather than ours.
+   const bool str_buy=!main_buy;
+   const ENUM_ORDER_TYPE str_ot = str_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double per=0.0;
+   if(!OrderCalcProfit(str_ot,_Symbol,1.0,current,main_entry,per))
    {
       if(InpStraddleLogSizing)
-         PrintFormat("NeoFL STRADDLE SIZING: refused - required %.2f exceeds cap %.2f "
-                     "(gap %.5f). Capping would under-cover the gap.",
-                     lots, InpStraddleHardCap, gap);
+         Print("NeoFL STRADDLE SIZING: refused - OrderCalcProfit failed; not sizing blind");
+      return 0.0;
+   }
+   per=MathAbs(per);
+   if(per<=0.0)
+   {
+      if(InpStraddleLogSizing)
+         Print("NeoFL STRADDLE SIZING: refused - broker values the gap at zero");
       return 0.0;
    }
 
-   // Delta-neutral guard: equal legs freeze bucket P/L at every price.
-   if(lots <= main_volume)
+   double lots = need/per;
+   if(InpStraddleSizing==STRADDLE_SIZING_RATIO)
+      lots = main_lot*(InpStraddleRecoveryRatio+1.0);
+
+   // CEIL, never floor: flooring under-covers the gap, so the basket stops
+   // short of zero and the handover never fires.
+   const double step=MathMax(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP),0.01);
+   const double vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   lots=NormalizeDouble(MathCeil(MathMax(lots,vmin)/step-1e-9)*step,2);
+
+   if(InpStraddleHardCap>0.0 && lots>InpStraddleHardCap)
    {
       if(InpStraddleLogSizing)
-         PrintFormat("NeoFL STRADDLE SIZING: refused - %.2f not larger than main %.2f "
-                     "(delta neutral; bucket could never reach zero)", lots, main_volume);
+         PrintFormat("NeoFL STRADDLE SIZING: REFUSED - required %.2f exceeds cap %.2f "
+                     "(gap %.5f, need %.2f). Capping would under-cover the gap.",
+                     lots,InpStraddleHardCap,entry_gap,need);
+      return 0.0;
+   }
+
+   // Delta-neutral guard: equal legs freeze basket P/L at every price, so no
+   // amount of movement ever brings the basket to zero.
+   if(lots<=main_lot)
+   {
+      if(InpStraddleLogSizing)
+         PrintFormat("NeoFL STRADDLE SIZING: REFUSED - %.2f not larger than main %.2f "
+                     "(delta neutral; basket could never reach zero)",lots,main_lot);
       return 0.0;
    }
 
    if(InpStraddleLogSizing)
    {
-      const double D  = gap * main_volume / (lots - main_volume);
-      const double zp = main_is_long ? (straddle_entry - D) : (straddle_entry + D);
-      PrintFormat("NeoFL STRADDLE SIZING: main %.2f @ %.5f, straddle @ %.5f, gap %.5f "
-                  "-> %.2f lots; bucket zero @ %.5f (%.5f away) [%s]",
-                  main_volume, main_entry, straddle_entry, gap, lots, zp, D,
-                  InpStraddleSizing==STRADDLE_SIZING_FIXED_DISTANCE ? "FIXED_DISTANCE" : "RATIO");
+      const double cover=lots*per;
+      PrintFormat("NeoFL STRADDLE SIZING [%s]: main %.2f @ %.5f, now %.5f, gap %.5f | "
+                  "loss %.2f + comm %.2f + swap %.2f + buf %.2f x%.2f = need %.2f | "
+                  "1 lot over gap = %.2f -> %.2f lots covering %.2f (%.0f%%)",
+                  InpStraddleSizing==STRADDLE_SIZING_RATIO?"RATIO":"GAP",
+                  main_lot,main_entry,current,entry_gap,
+                  MathAbs(raw_profit),commission_main,swap_cost,
+                  InpStraddleProfitBufferMoney,MathMax(1.0,InpStraddleSafetyFactor),
+                  need,per,lots,cover,need>0.0?cover/need*100.0:100.0);
    }
    return lots;
 }
@@ -2098,16 +2142,12 @@ bool ExecuteObserverStraddleState()
          main_buy=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
          bool straddle_buy=!main_buy;
          double px=straddle_buy?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID);
-
-         // v3.86: size from the actual gap rather than the observer's ATR projection.
          double str_lots=g_observer_straddle_lots;
          if(InpStraddleSizing!=STRADDLE_SIZING_LEGACY)
          {
-            const double main_entry=PositionGetDouble(POSITION_PRICE_OPEN);
-            const double main_vol  =PositionGetDouble(POSITION_VOLUME);
-            str_lots=CalculateGapStraddleLots(main_vol,main_entry,px,main_buy);
+            str_lots=CalculateGapStraddleLots(main_ticket);
             if(str_lots<=0.0)
-               return false;   // refused: sizing said this bucket cannot recover
+               return false;   // refused: this basket could not recover
          }
 
          if(OpenStraddle(straddle_buy,str_lots,px))
@@ -2439,41 +2479,38 @@ bool ObserverAllowsNewExposure()
 
 int OnInit()
 {
-   //--- v3.86 DEMO GUARD -------------------------------------------------------
-   // This build carries an unapproved trading-behaviour change (gap-based straddle
-   // sizing). It refuses to start on a real-money account. Set InpAllowLiveAccount
-   // only after the sizing has been validated on demo and approved.
-   const ENUM_ACCOUNT_TRADE_MODE acct =
+   //--- v3.86 DEMO GUARD ------------------------------------------------------
+   // Carries an unapproved trading-behaviour change (local gap sizing).
+   const ENUM_ACCOUNT_TRADE_MODE acct=
       (ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   if(acct != ACCOUNT_TRADE_MODE_DEMO && !InpAllowLiveAccount)
+   if(acct!=ACCOUNT_TRADE_MODE_DEMO && !InpAllowLiveAccount)
    {
-      Print("=====================================================");
-      Print(" NeoFL v3.86 REFUSED TO START");
-      Print(" This is a DEMO validation build and the account is not a demo account.");
-      Print(" It contains an unapproved straddle-sizing change.");
-      Print(" Set InpAllowLiveAccount=true only after demo validation and approval.");
-      Print("=====================================================");
+      Print("NeoFL v3.86 REFUSED TO START: not a demo account.");
+      Print("  This build contains an unapproved straddle-sizing change.");
+      Print("  Set InpAllowLiveAccount=true only after demo validation.");
       return INIT_FAILED;
    }
 
-   // D-005: straddle recovery is impossible on a netting account. The legacy build
-   // announced this once and continued; here it is a hard gate, because the basket
-   // mechanism is the only risk control in this architecture.
-   const ENUM_ACCOUNT_MARGIN_MODE mm =
+   // D-005: the straddle cannot exist on a netting account, and in this
+   // strategy the basket IS the risk control -- so running there would trade
+   // unprotected. v3.85 announced this once and continued; this refuses.
+   const ENUM_ACCOUNT_MARGIN_MODE mm=
       (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
-   if(mm != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   if(mm!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {
       Print("NeoFL v3.86 REFUSED TO START: account is NETTING, not hedging.");
-      Print(" The recovery straddle cannot exist on a netting account, which means");
-      Print(" the only risk control in this strategy would be absent. Refusing.");
+      Print("  The recovery straddle cannot exist, so the only risk control");
+      Print("  in this strategy would be absent. Refusing to trade.");
       return INIT_FAILED;
    }
 
-   PrintFormat("NeoFL v3.86 DEMO | account=%s margin=HEDGING | straddle sizing=%s",
-               acct==ACCOUNT_TRADE_MODE_DEMO ? "DEMO" : "LIVE (overridden)",
-               InpStraddleSizing==STRADDLE_SIZING_FIXED_DISTANCE ? "FIXED_DISTANCE" :
-               InpStraddleSizing==STRADDLE_SIZING_RATIO ? "RATIO" : "LEGACY");
-   //--- end guard --------------------------------------------------------------
+   PrintFormat("NeoFL v3.86 DEMO | %s | HEDGING | sizing=%s | cap=%.2f",
+               acct==ACCOUNT_TRADE_MODE_DEMO?"DEMO":"LIVE(overridden)",
+               InpStraddleSizing==STRADDLE_SIZING_GAP?"GAP":
+               InpStraddleSizing==STRADDLE_SIZING_RATIO?"RATIO":"LEGACY",
+               InpStraddleHardCap);
+   Print("NOTE: do NOT attach NeoFL_Straddle_Observer_v3_85 alongside this build.");
+   //--- end guard -------------------------------------------------------------
 
    if(!ValidateConfiguredLotFloors())
       return(INIT_PARAMETERS_INCORRECT);
