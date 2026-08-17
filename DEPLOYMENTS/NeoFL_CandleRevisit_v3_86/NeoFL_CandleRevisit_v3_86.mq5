@@ -2583,11 +2583,27 @@ int OnInit()
       const double per = AccountCurrencyPerLotPerUnit();
       const double cap = EffectiveStraddleCap();
 
-      PrintFormat("  account: %s %.2f %s | contract=%.2f tick_value=%.5f tick_size=%.5f",
-                  acct_name, bal, ccy,
-                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE),
-                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE),
-                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE));
+      // D-010: the full instrument specification, read from the broker. Nothing about
+      // contract economics may be assumed -- "0.01 lot = 1 cent per dollar" was an
+      // inference during analysis and must come from these numbers instead.
+      Print("  ---- INSTRUMENT SPECIFICATION (from broker) ----");
+      PrintFormat("    symbol        %s", _Symbol);
+      PrintFormat("    contract size %.2f", SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE));
+      PrintFormat("    tick size     %.8f", SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE));
+      PrintFormat("    tick value    %.8f %s", SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE), ccy);
+      PrintFormat("    point         %.8f", SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+      PrintFormat("    digits        %d", (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+      PrintFormat("    volume min    %.4f", SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
+      PrintFormat("    volume max    %.4f", SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX));
+      PrintFormat("    volume step   %.4f", SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP));
+      PrintFormat("    currency      %s", ccy);
+      PrintFormat("    price now     bid %.*f  ask %.*f",
+                  (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
+                  SymbolInfoDouble(_Symbol, SYMBOL_BID),
+                  (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
+                  SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+      PrintFormat("    balance       %.2f %s", bal, ccy);
+      Print("  -----------------------------------------------");
 
       if(per > 0.0)
       {

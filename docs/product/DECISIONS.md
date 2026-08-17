@@ -410,3 +410,144 @@ considered unusable. **Either room may propose a schema change; neither changes 
    across.
 3. The schema is a joint contract; changes are coordinated.
 4. D-001 holds absolutely: no Python component ever places, modifies, or closes an order.
+
+---
+
+## D-008 — AutoCapital sizing, and 1R is the straddle trigger distance
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+**Supersedes:** the `0.01` hard cap as a sizing rule (it survives only as an exposure limit)
+
+### Decision
+
+Position sizing is computed by an **instrument-aware AutoCapital engine**, from:
+
+```
+account balance / equity        instrument specification
+available funds                 contract size
+strategy risk configuration     tick size / tick value
+current price                   broker volume min / max / step
+required recovery economics     exposure limits
+straddle trigger distance
+```
+
+Sizing is **configured per strategy**. No single lot size is hard-coded across the NeoFL
+universe.
+
+### The rule that changes the Risk engine: 1R is not a stop
+
+Target reward:risk is **1:2**. But:
+
+> **1R = the distance from the main trade entry to the straddle recovery trigger.**
+
+Not an ordinary initial stop loss. This strategy family has no stops (see
+`LEGACY_STRADDLE_DEFECTS.md`) — the straddle *is* the risk event, so the distance to it is
+what "risk" means here.
+
+The consequence is that sizing and recovery are one calculation, not two. The engine must
+derive, together:
+
+- the **straddle trigger distance** (which defines 1R), and
+- the **straddle lot size** needed to make recovery work at that distance
+
+from live market, instrument and account conditions. Sizing the main trade without knowing
+where recovery triggers would be sizing against an undefined risk.
+
+### What happens to `0.01`
+
+It becomes, at most, a **configurable maximum lot / exposure limit**. It is no longer the
+sizing algorithm.
+
+The ability to impose a maximum must not be removed — capping exposure is a legitimate
+safety control. What is removed is treating one number as the universal answer, which is
+the same defect D-006 identified for account types.
+
+### Consequences
+
+1. `CORE/NeoFL_Risk` gains an AutoCapital layer; the current percent/fixed models become
+   inputs to it rather than the whole engine.
+2. The Straddle Engine and the Risk engine share a calculation and cannot be finished
+   independently.
+3. Strategy configuration becomes a first-class object — per-strategy risk, not global.
+
+---
+
+## D-009 — ARK's signal layer is blocked; infrastructure proceeds regardless
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+
+### Decision
+
+**ARK is blocked at the signal layer** until the exact trading rules are supplied.
+
+- Do **not** invent `ARKSignal()`.
+- Do **not** substitute Jobbing logic for ARK. The backtest file named ARK containing
+  Jobbing is a naming and history problem, not evidence the two are the same strategy.
+- The architectural description ("liquidity flow and market structure") is **not**
+  sufficient to derive deterministic entry rules, and must not be treated as if it were.
+
+### The part that unblocks everything else
+
+**Infrastructure may be built before the strategy signal is finalised.**
+
+When ARK's rules arrive they plug into the existing strategy interface. They must not
+require another Core rewrite — which is the actual test of whether the interface was
+designed properly.
+
+### Status
+
+**Unblocked and buildable now:** Core, AutoCapital, Execution abstraction, Position
+Manager, Bucket, Straddle, Stop/BE/Trailing, Observer Network, data layer, Python/MT5
+bridge, calendar and session, backtest framework, symbol resolver.
+
+**Blocked:** `ARKSignal()` only.
+
+---
+
+## D-010 — Research discipline: evidence before implementation
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+
+### Decision
+
+```
+Research  ->  evidence  ->  decision  ->  implementation
+```
+
+A research result **never silently changes a production EA**.
+
+### Applied to the open Gold questions
+
+These belong to the **Gold wickless strategy**, not ARK, and are research questions rather
+than blockers:
+
+| Question | Position until evidence arrives |
+|---|---|
+| Does the wickless thesis hold? | run `NeoFL_WicklessResearch` on Gold |
+| Wickless *end* vs candle *open*? | **keep `open`.** Flag as an unresolved Gold parameter; the research script must report **both** interpretations for comparison |
+| Straddle 0.02 vs 0.03? | **keep 0.02.** Do not silently change it. The Straddle Engine computes dynamically where configured to |
+| Broker contract and tick values? | verify empirically on the real account; never assume |
+
+### Validation sequence — no stage may be skipped
+
+```
+compile -> unit / state validation -> historical backtest
+        -> forward / demo validation -> controlled live deployment
+```
+
+No claim of profitability follows from compiling, from correct arithmetic, or from having
+traded live. Those establish validity, not edge.
+
+### Instrument specification must be read, never assumed
+
+The startup diagnostic exposes, at minimum: symbol, contract size, tick size, tick value,
+point, digits, volume min/max/step, account currency, current price.
+
+Assumptions such as "0.01 lot = 1 cent per dollar of movement" are forbidden — that figure
+was inferred during analysis and must come from the broker instead.
