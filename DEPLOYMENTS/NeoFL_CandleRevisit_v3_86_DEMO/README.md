@@ -1,84 +1,87 @@
-# NeoFL Candle Revisit v3.86 — DEMO validation build
+# NeoFL Candle Revisit v3.86 — DEMO
 
-**This build trades.** It is the v3.85 LIVE Candle Revisit engine with one deliberate
-change, packaged for demo validation.
-
-It **refuses to start on a real-money account** (`InpAllowLiveAccount=false`) and
-**refuses to start on a netting account** — the recovery straddle cannot exist there, and
-in this strategy the basket mechanism is the only risk control.
-
-## What changed from v3.85
-
-### 1. Straddle sizing now follows the gap (the requested rule)
-
-v3.85 sized the straddle from the observer's **ATR projection**. v3.86 sizes it from the
-**actual gap between the main entry and the straddle entry**, so the gap always returns to
-zero:
+**The EA executes. The script decides.** Attach both to the same chart.
 
 ```
-bucket zero at distance D past straddle entry   ->   Vs = Vm × (gap + D) / D
+NeoFL_MasterBrain_Script_v3_85.mq5   the brain — decides, writes state, never trades
+NeoFL_CandleRevisit_v3_86_DEMO.mq5   the executor — reads state, places orders
 ```
 
-Two modes, both fully covering the loss:
+## What was wrong in v3.85
 
-| `InpStraddleSizing` | Formula | Behaviour |
+That separation existed on paper but not in practice. The EA **also** ran the brain
+internally (`NeoFLObs_Update`), so two components wrote the same global variable:
+
+| Writer | Cadence | Value |
 |---|---|---|
-| **`RATIO`** *(default)* | `Vs = main × (n+1)`, recovers in `gap/n` | Size fixed, distance follows the gap. **n=2 → 0.03 against 0.01 — identical to your current live behaviour.** |
-| `FIXED_DISTANCE` | `Vs = main × (gap+D)/D` | Distance fixed, size follows the gap. Exposure grows with the gap. |
+| MasterBrain script | ~1/second | gap-based — **correct** |
+| EA, internally | **every tick** | ATR projection; reset to 0 when flat |
 
-The default reproduces what you run today, so the first demo session changes nothing about
-sizing. Switch to `FIXED_DISTANCE` when you want to test the gap-scaling rule.
+Both resolve to `NEOFL_OBS_<symbol>_26081401_STRADDLE_LOTS`.
 
-`InpStraddleHardCap` (default 0.30) bounds `FIXED_DISTANCE`. If the required size exceeds
-it, the straddle is **refused** rather than capped — a capped straddle under-covers the gap
-and the bucket would never reach zero.
+The EA writes far more often, so it usually overwrote the script's correct value before
+reading it back — then sized the straddle from whichever wrote last. **The right number
+was computed and then clobbered**, invisibly, because both values look plausible.
 
-### 2. Delta-neutral is refused
+## What v3.86 changes
 
-A straddle no larger than the main freezes bucket P/L at every price: the legs offset
-exactly and no price recovers it. v3.86 refuses instead of opening a position that cannot
-work.
+**`InpInternalBrain = false`** (default). The EA writes nothing. One brain, one writer,
+no race. The straddle sizing formula is untouched — it stays in the MasterBrain, where it
+already implemented your rule correctly:
 
-### 3. The orphaned observer script is gone
+```
+need = (|main floating loss| + commission + swap + buffer) × safety
+per  = what 1.0 lot earns travelling from straddle entry back to main entry
+lots = ceil(need / per)
+```
 
-`NeoFL_Straddle_Observer_v3_85.mq5` and its bridge are **excluded**. The observer published
-to `NEOFL_SB_*`; the EA reads `NEOFL_OBS_*`; nothing connected them, and the bridge was
-included nowhere. The EA's internal basket path was always doing the work. See
-`docs/architecture/LEGACY_STRADDLE_DEFECTS.md`.
+**Brain liveness is checked.** With the brain external, a script that was never attached
+or has stopped leaves stale globals behind that look exactly like "do nothing". MT5
+globals survive terminal restarts, so a stale `STRADDLE_ARM` could arm a straddle sized
+for a position that no longer exists. If the heartbeat is older than
+`InpBrainMaxAgeSeconds` (30), the EA treats brain state as unavailable and arms nothing —
+and says so in the log.
 
-**Do not attach the old observer script alongside this build.**
+**The executor validates before executing.** It does not size the straddle, but it refuses
+an instruction that cannot work:
+
+- **straddle ≤ main** → refused. Equal and opposite legs offset exactly, so basket P/L
+  freezes and *no* price ever brings it to zero. Waiting would wait forever.
+- **above `InpStraddleHardCap`** (0.30) → refused, **not capped**. A capped straddle
+  under-covers the gap, so the basket could never reach zero.
+- Rounding is **ceil**, never floor, for the same reason.
 
 ## Install
 
-1. MT5 → File → Open Data Folder
-2. Copy this folder into `MQL5/Experts/`
-3. MetaEditor → compile `NeoFL_CandleRevisit_v3_86_DEMO.mq5`
-4. Attach to an **XAUUSD** chart on a **demo** account
-5. Enable **AutoTrading** — this build does place orders
+1. MT5 → File → Open Data Folder → `MQL5/Experts/`
+2. Copy this whole folder in
+3. Compile **both** `.mq5` files in MetaEditor
+4. On an **XAUUSD demo** chart: attach the **EA**, then attach the **MasterBrain script**
+5. Enable AutoTrading
 
-Magic number `26081401`, unchanged from v3.85.
+Magic `26081401`, unchanged.
 
-## What to watch in the Experts log
+**Do not attach `NeoFL_Straddle_Observer_v3_85`.** It writes `NEOFL_SB_*`, which nothing
+reads, and duplicates the MasterBrain's work. It is excluded from this package.
 
-Every sizing decision is logged (`InpStraddleLogSizing=true`):
+## What to watch
 
 ```
-NeoFL STRADDLE SIZING: main 0.01 @ 2400.00000, straddle @ 2380.00000, gap 20.00000
-  -> 0.03 lots; bucket zero @ 2370.00000 (10.00000 away) [RATIO]
+NeoFL v3.86 | DEMO | HEDGING | brain=EXTERNAL SCRIPT | cap=0.30
+  EA IS EXECUTION ONLY. Attach NeoFL_MasterBrain_Script_v3_85 to this chart.
+
+NeoFL STRADDLE: brain requested 0.0213 -> executing 0.03 | main 0.01 @ 2400.00,
+  now 2380.00, gap 20.00 | brain P/L -20.70
 ```
 
-Check that: the gap matches what you see on the chart, the lots match the formula, and the
-bucket actually reaches zero near the stated price.
-
-Refusals are logged too, with the reason — a straddle that does not open should always say
-why.
+If you see `BRAIN NOT DETECTED` or `BRAIN STALE`, the script isn't running — the EA will
+trade the main entry but arm no straddle. That is deliberate: without the brain there is
+no recovery mechanism, and in this strategy the basket *is* the risk control.
 
 ## Honest limits
 
-- **Not backtested by me.** MQL5 compiles on this Mac, but the Strategy Tester needs broker
-  credentials I will not handle. Run it in the tester yourself before demo if you want.
-- **The sizing change is unapproved trading behaviour.** Validate on demo first.
-- Entry logic, basket management, and everything else are **unchanged from v3.85** — this
-  is not a rewrite.
-- The straddle still carries no stop loss. That is the v3.85 design (`"no SL orders"`), not
-  an omission introduced here.
+- **Not backtested by me.** The Strategy Tester needs broker credentials I will not handle.
+- Entry logic, basket management and exits are **unchanged from v3.85**.
+- The straddle still carries no stop loss — that is the v3.85 design (`"no SL orders"`),
+  not something introduced here.
+- Refuses to start on a non-demo or netting account.

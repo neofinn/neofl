@@ -3,20 +3,25 @@
 //| No NeoFL engine dependencies                                     |
 //+------------------------------------------------------------------+
 #property strict
-input double InpStraddleFixedLot = 0.03; // legacy fixed lot (LEGACY mode only)
+input double InpStraddleFixedLot = 0.03; // legacy fixed lot (unused when brain is external)
 
-//================= v3.86 STRADDLE SIZING ============================
-enum ENUM_STRADDLE_SIZING
-{
-   STRADDLE_SIZING_GAP    = 0, // MasterBrain rule: cover the gap loss (default)
-   STRADDLE_SIZING_RATIO  = 1, // fixed multiple of the main lot
-   STRADDLE_SIZING_LEGACY = 2  // read the raced global variable (v3.85 behaviour)
-};
-input ENUM_STRADDLE_SIZING InpStraddleSizing        = STRADDLE_SIZING_GAP;
-input double               InpStraddleRecoveryRatio = 2.0;
-input double               InpStraddleHardCap       = 0.30;
-input bool                 InpStraddleLogSizing     = true;
-input bool                 InpAllowLiveAccount      = false;
+//============ v3.86: EA IS EXECUTION ONLY ===========================
+// The EA executes. The MasterBrain SCRIPT decides. Attach both to the chart.
+//
+// v3.85 broke that separation: the EA also ran NeoFLObs_Update internally,
+// so the EA and the MasterBrain script both wrote
+//     NEOFL_OBS_<symbol>_<magic>_STRADDLE_LOTS
+// the EA every tick, the script about once a second. The EA therefore
+// overwrote the script's correct gap-based value before reading it back,
+// and sized the straddle from whichever wrote last. The right number was
+// computed and then clobbered, invisibly, because both looked plausible.
+//
+// With InpInternalBrain=false the EA writes nothing. One brain, one writer.
+input bool   InpInternalBrain      = false; // false = MasterBrain script is authoritative
+input int    InpBrainMaxAgeSeconds = 30;    // brain considered dead beyond this
+input double InpStraddleHardCap    = 0.30;  // 0 = uncapped; REFUSES above it, never caps
+input bool   InpStraddleLogSizing  = true;
+input bool   InpAllowLiveAccount   = false; // refuses real-money accounts unless true
 #property version   "3.86"
 #property description "NeoFL integrated M5 execution EA: CTrade is the only execution authority; live Observer/Straddle/Calendar/Fund-Risk state is supplied by one continuous data-feeder script."
 
@@ -1821,130 +1826,108 @@ bool HasStraddlePosition(ulong &ticket)
 }
 
 //+------------------------------------------------------------------+
-//| v3.86: straddle sizing, computed LOCALLY.                         |
+//| v3.86: is the external brain alive?                               |
 //|                                                                   |
-//| This is the NeoFL_MasterBrain_v3_85 rule. The FORMULA is           |
-//| unchanged; what changes is WHERE it runs.                         |
+//| D-002 -- absence of a signal must itself be observable. With the  |
+//| brain external, a script that is not attached, has been stopped,  |
+//| or has crashed leaves stale global variables behind. Those look   |
+//| exactly like a brain that is deliberately saying "do nothing".    |
 //|                                                                   |
-//| WHY IT MOVED                                                      |
-//| In v3.85 two components wrote the SAME global variable:           |
-//|                                                                   |
-//|   MasterBrain script -> NEOFL_OBS_<sym>_<magic>_STRADDLE_LOTS     |
-//|                         gap-based, ~1/second, CORRECT             |
-//|   EA Observer Core   -> NEOFL_OBS_<sym>_<magic>_STRADDLE_LOTS     |
-//|                         ATR projection, EVERY TICK, and reset to  |
-//|                         0 whenever no main position exists        |
-//|                                                                   |
-//| The EA writes far more often, so it usually overwrote the correct |
-//| value before reading it back. The right number was computed, then |
-//| clobbered. Computing it here removes the shared variable, so      |
-//| there is nothing left to race.                                    |
-//|                                                                   |
-//| THE RULE                                                          |
-//|   need = (|main floating loss| + commission + swap + buffer)      |
-//|          x safety factor                                          |
-//|   per  = what 1.0 lot of the straddle earns travelling from the   |
-//|          straddle entry BACK to the main entry                    |
-//|   lots = ceil(need / per)                                         |
-//|                                                                   |
-//| So when price returns to the main entry the gap loss is covered   |
-//| and the basket sits at or above zero, which is the stated rule.   |
+//| MT5 global variables persist across terminal restarts, so a stale |
+//| STRADDLE_ARM from a previous session could arm a straddle sized   |
+//| from a position that no longer exists.                            |
 //+------------------------------------------------------------------+
-double CalculateGapStraddleLots(const ulong main_ticket)
+bool IsBrainAlive()
 {
-   if(main_ticket==0 || !PositionSelectByTicket(main_ticket)) return 0.0;
+   if(InpInternalBrain) return true;   // the EA is its own brain
 
-   const bool   main_buy   = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
-   const double main_entry = PositionGetDouble(POSITION_PRICE_OPEN);
-   const double main_lot   = PositionGetDouble(POSITION_VOLUME);
-   const double raw_profit = PositionGetDouble(POSITION_PROFIT);
-   const double swap_cost  = MathAbs(PositionGetDouble(POSITION_SWAP));
-   const double current    = main_buy ? SymbolInfoDouble(_Symbol,SYMBOL_BID)
-                                      : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-   const double entry_gap  = MathAbs(main_entry-current);
-
-   if(entry_gap<=0.0 || raw_profit>=0.0)
+   const double hb = ReadObserverValue("HEARTBEAT", 0.0);
+   if(hb <= 0.0)
    {
-      if(InpStraddleLogSizing)
-         PrintFormat("NeoFL STRADDLE SIZING: refused - gap %.5f, main P/L %.2f (not adverse)",
-                     entry_gap,raw_profit);
-      return 0.0;
-   }
-
-   double commission_main=0.0;
-   const ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
-   if(pid!=0 && HistorySelectByPosition(pid))
-   {
-      const int nd=HistoryDealsTotal();
-      for(int i=0;i<nd;i++)
+      static datetime warned_never = 0;
+      if(TimeCurrent() - warned_never > 60)
       {
-         const ulong d=HistoryDealGetTicket(i);
-         if(d!=0) commission_main += MathAbs(HistoryDealGetDouble(d,DEAL_COMMISSION));
+         warned_never = TimeCurrent();
+         Print("NeoFL: BRAIN NOT DETECTED. Attach NeoFL_MasterBrain_Script_v3_85 "
+               "to this chart. No straddle will be armed until it is running.");
       }
+      return false;
    }
 
-   double need = MathAbs(raw_profit)+commission_main+swap_cost+InpStraddleProfitBufferMoney;
-   need *= MathMax(1.0,InpStraddleSafetyFactor);
-
-   // Ask the broker what one lot earns over the ACTUAL gap, so contract size,
-   // tick value and currency conversion are its numbers rather than ours.
-   const bool str_buy=!main_buy;
-   const ENUM_ORDER_TYPE str_ot = str_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double per=0.0;
-   if(!OrderCalcProfit(str_ot,_Symbol,1.0,current,main_entry,per))
+   const int age = (int)(TimeCurrent() - (datetime)hb);
+   if(age > InpBrainMaxAgeSeconds)
    {
-      if(InpStraddleLogSizing)
-         Print("NeoFL STRADDLE SIZING: refused - OrderCalcProfit failed; not sizing blind");
-      return 0.0;
+      static datetime warned_stale = 0;
+      if(TimeCurrent() - warned_stale > 60)
+      {
+         warned_stale = TimeCurrent();
+         PrintFormat("NeoFL: BRAIN STALE - last heartbeat %ds ago (limit %ds). "
+                     "Treating its state as DATA_UNAVAILABLE; no straddle will be armed.",
+                     age, InpBrainMaxAgeSeconds);
+      }
+      return false;
    }
-   per=MathAbs(per);
-   if(per<=0.0)
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| v3.86: validate what the brain asked for before executing it.     |
+//|                                                                   |
+//| The EA does not size the straddle -- that is the script's job.    |
+//| But an executor should still refuse an instruction that cannot    |
+//| work, rather than placing a position that can never recover.      |
+//+------------------------------------------------------------------+
+double ValidateStraddleLots(const double requested, const ulong main_ticket)
+{
+   if(requested <= 0.0)
    {
       if(InpStraddleLogSizing)
-         Print("NeoFL STRADDLE SIZING: refused - broker values the gap at zero");
-      return 0.0;
-   }
-
-   double lots = need/per;
-   if(InpStraddleSizing==STRADDLE_SIZING_RATIO)
-      lots = main_lot*(InpStraddleRecoveryRatio+1.0);
-
-   // CEIL, never floor: flooring under-covers the gap, so the basket stops
-   // short of zero and the handover never fires.
-   const double step=MathMax(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP),0.01);
-   const double vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
-   lots=NormalizeDouble(MathCeil(MathMax(lots,vmin)/step-1e-9)*step,2);
-
-   if(InpStraddleHardCap>0.0 && lots>InpStraddleHardCap)
-   {
-      if(InpStraddleLogSizing)
-         PrintFormat("NeoFL STRADDLE SIZING: REFUSED - required %.2f exceeds cap %.2f "
-                     "(gap %.5f, need %.2f). Capping would under-cover the gap.",
-                     lots,InpStraddleHardCap,entry_gap,need);
+         Print("NeoFL STRADDLE: refused - brain requested zero lots");
       return 0.0;
    }
 
-   // Delta-neutral guard: equal legs freeze basket P/L at every price, so no
-   // amount of movement ever brings the basket to zero.
-   if(lots<=main_lot)
+   if(main_ticket == 0 || !PositionSelectByTicket(main_ticket))
+      return 0.0;
+
+   const double main_lot = PositionGetDouble(POSITION_VOLUME);
+
+   const double step = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP), 0.01);
+   const double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   // CEIL, never floor: flooring under-covers the gap, so the basket stops short
+   // of zero and the handover never fires.
+   double lots = NormalizeDouble(MathCeil(MathMax(requested, vmin)/step - 1e-9)*step, 2);
+
+   if(InpStraddleHardCap > 0.0 && lots > InpStraddleHardCap)
    {
       if(InpStraddleLogSizing)
-         PrintFormat("NeoFL STRADDLE SIZING: REFUSED - %.2f not larger than main %.2f "
-                     "(delta neutral; basket could never reach zero)",lots,main_lot);
+         PrintFormat("NeoFL STRADDLE: REFUSED - brain asked %.2f, cap is %.2f. "
+                     "Capping would under-cover the gap, so the basket could never "
+                     "reach zero. Raise InpStraddleHardCap deliberately if intended.",
+                     lots, InpStraddleHardCap);
+      return 0.0;
+   }
+
+   // Delta-neutral guard: equal and opposite legs offset exactly, so basket P/L
+   // freezes and NO price ever brings it to zero. Waiting would wait forever.
+   if(lots <= main_lot)
+   {
+      if(InpStraddleLogSizing)
+         PrintFormat("NeoFL STRADDLE: REFUSED - %.2f is not larger than main %.2f. "
+                     "The basket would be delta-neutral and could never reach zero.",
+                     lots, main_lot);
       return 0.0;
    }
 
    if(InpStraddleLogSizing)
    {
-      const double cover=lots*per;
-      PrintFormat("NeoFL STRADDLE SIZING [%s]: main %.2f @ %.5f, now %.5f, gap %.5f | "
-                  "loss %.2f + comm %.2f + swap %.2f + buf %.2f x%.2f = need %.2f | "
-                  "1 lot over gap = %.2f -> %.2f lots covering %.2f (%.0f%%)",
-                  InpStraddleSizing==STRADDLE_SIZING_RATIO?"RATIO":"GAP",
-                  main_lot,main_entry,current,entry_gap,
-                  MathAbs(raw_profit),commission_main,swap_cost,
-                  InpStraddleProfitBufferMoney,MathMax(1.0,InpStraddleSafetyFactor),
-                  need,per,lots,cover,need>0.0?cover/need*100.0:100.0);
+      const double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      const bool   isbuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      const double now   = isbuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                 : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      PrintFormat("NeoFL STRADDLE: brain requested %.4f -> executing %.2f | "
+                  "main %.2f @ %.5f, now %.5f, gap %.5f | brain P/L %.2f",
+                  requested, lots, main_lot, entry, now, MathAbs(entry-now),
+                  ReadObserverValue("BASKET_PNL", 0.0));
    }
    return lots;
 }
@@ -2129,7 +2112,7 @@ bool ExecuteObserverStraddleState()
       }
    }
 
-   if(g_observer_straddle_arm)
+   if(g_observer_straddle_arm && IsBrainAlive())
    {
       ulong st=0;
       if(HasStraddlePosition(st))
@@ -2142,13 +2125,9 @@ bool ExecuteObserverStraddleState()
          main_buy=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
          bool straddle_buy=!main_buy;
          double px=straddle_buy?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID);
-         double str_lots=g_observer_straddle_lots;
-         if(InpStraddleSizing!=STRADDLE_SIZING_LEGACY)
-         {
-            str_lots=CalculateGapStraddleLots(main_ticket);
-            if(str_lots<=0.0)
-               return false;   // refused: this basket could not recover
-         }
+         const double str_lots=ValidateStraddleLots(g_observer_straddle_lots,main_ticket);
+         if(str_lots<=0.0)
+            return false;   // refused: unusable instruction
 
          if(OpenStraddle(straddle_buy,str_lots,px))
          {
@@ -2237,6 +2216,10 @@ void UpdateIntegratedObserver()
    if(!InpUseObserverNetwork) return;
    if(ExternalFeederActive()) return;
 
+   // v3.86: the EA is EXECUTION ONLY. When the MasterBrain script is the brain,
+   // the EA must not write the shared state -- doing so on every tick is what
+   // overwrote the script's correct straddle size in v3.85.
+   if(InpInternalBrain)
    NeoFLObs_Update(InpObserverPrefix,_Symbol,InpMagic,
                    InpObserverActivationDDPct,InpObserverActivationATR,
                    InpObserverHardDDPct,InpObserverGraceM3Bars,
@@ -2479,38 +2462,43 @@ bool ObserverAllowsNewExposure()
 
 int OnInit()
 {
-   //--- v3.86 DEMO GUARD ------------------------------------------------------
-   // Carries an unapproved trading-behaviour change (local gap sizing).
+   //--- v3.86 startup guards ---------------------------------------------------
    const ENUM_ACCOUNT_TRADE_MODE acct=
       (ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
    if(acct!=ACCOUNT_TRADE_MODE_DEMO && !InpAllowLiveAccount)
    {
       Print("NeoFL v3.86 REFUSED TO START: not a demo account.");
-      Print("  This build contains an unapproved straddle-sizing change.");
+      Print("  This build changes how the straddle instruction is sourced.");
       Print("  Set InpAllowLiveAccount=true only after demo validation.");
       return INIT_FAILED;
    }
 
-   // D-005: the straddle cannot exist on a netting account, and in this
-   // strategy the basket IS the risk control -- so running there would trade
-   // unprotected. v3.85 announced this once and continued; this refuses.
+   // D-005: the straddle cannot exist on a netting account, and in this strategy
+   // the basket IS the risk control -- so running there would trade unprotected.
    const ENUM_ACCOUNT_MARGIN_MODE mm=
       (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
    if(mm!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {
       Print("NeoFL v3.86 REFUSED TO START: account is NETTING, not hedging.");
-      Print("  The recovery straddle cannot exist, so the only risk control");
-      Print("  in this strategy would be absent. Refusing to trade.");
+      Print("  The recovery straddle cannot exist, so the only risk control in");
+      Print("  this strategy would be absent.");
       return INIT_FAILED;
    }
 
-   PrintFormat("NeoFL v3.86 DEMO | %s | HEDGING | sizing=%s | cap=%.2f",
+   Print("=====================================================");
+   PrintFormat("NeoFL v3.86 | %s | HEDGING | brain=%s | cap=%.2f",
                acct==ACCOUNT_TRADE_MODE_DEMO?"DEMO":"LIVE(overridden)",
-               InpStraddleSizing==STRADDLE_SIZING_GAP?"GAP":
-               InpStraddleSizing==STRADDLE_SIZING_RATIO?"RATIO":"LEGACY",
+               InpInternalBrain?"INTERNAL (EA writes state)":"EXTERNAL SCRIPT",
                InpStraddleHardCap);
-   Print("NOTE: do NOT attach NeoFL_Straddle_Observer_v3_85 alongside this build.");
-   //--- end guard -------------------------------------------------------------
+   if(!InpInternalBrain)
+   {
+      Print("  EA IS EXECUTION ONLY. Attach NeoFL_MasterBrain_Script_v3_85 to this chart.");
+      Print("  Without it, no straddle will be armed - by design, not by failure.");
+   }
+   Print("  Do NOT attach NeoFL_Straddle_Observer_v3_85 - it writes NEOFL_SB_*,");
+   Print("  which nothing reads, and duplicates the MasterBrain's work.");
+   Print("=====================================================");
+   //--- end guards -------------------------------------------------------------
 
    if(!ValidateConfiguredLotFloors())
       return(INIT_PARAMETERS_INCORRECT);
