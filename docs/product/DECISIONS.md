@@ -276,3 +276,60 @@ setup.
 3. Position identity cannot rely on "one position per symbol" — several coexist, which is
    precisely why identity must come from a magic number or a ticket registry rather than
    the symbol or a comment.
+
+---
+
+## D-006 — The product is account-agnostic; it adapts rather than being configured
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+
+### Decision
+
+NeoFL runs on cent accounts and standard accounts alike, and **the account type must not
+change the outcome**. The product recognises its environment and adjusts itself. The
+operator does not re-tune parameters when moving between accounts.
+
+### Why the previous approach was wrong
+
+`InpStraddleHardCap = 0.30` is a fixed lot count, and a lot count means nothing on its own.
+On a cent account it is negligible; on a standard account it is 100× the exposure. The same
+flaw ran through every absolute-money input — `InpStraddleProfitBufferMoney = 1.00` is one
+US dollar on a standard account and one US **cent** on a cent account. Identical settings,
+hundred-fold different behaviour.
+
+Parameters expressed in lots or absolute money silently encode an assumption about the
+account they were tuned on.
+
+### The principle: relative, not absolute — and no detection
+
+The instinct is to detect cent accounts and scale. That is the worse fix: detection is
+guesswork (currency naming is not standardised), and it fails on any account type nobody
+anticipated.
+
+Express every limit as a **fraction of the account**, and the question disappears:
+
+```
+straddle cap (lots) = (balance x cap%) / (account currency per lot per unit of price)
+```
+
+The denominator comes from the broker's own `SYMBOL_TRADE_TICK_VALUE / SYMBOL_TRADE_TICK_SIZE`.
+Cent accounts, standard accounts, exotic account currencies and different instruments all
+resolve correctly, because the broker's own numbers carry the scaling. Nothing is inferred.
+
+### What was already correct
+
+The straddle sizing formula itself needed no change. It calls `OrderCalcProfit`, which
+returns account currency, so it was already account-agnostic — the cent denomination
+cancels between numerator and denominator. The defect was entirely in the *limits* wrapped
+around it.
+
+### What this changes in practice
+
+1. Caps and buffers are configured as percentages of balance, not lots or money.
+2. The EA derives the effective lot cap at runtime and **reports what it derived**, so the
+   operator can see the inference rather than trust it (D-002).
+3. Absolute inputs remain available for an operator who deliberately wants them, but are no
+   longer the default path.
+4. Moving an account, changing broker, or switching instrument requires no re-tuning.

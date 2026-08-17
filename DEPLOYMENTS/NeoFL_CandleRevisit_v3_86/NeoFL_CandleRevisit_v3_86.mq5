@@ -19,7 +19,20 @@ input double InpStraddleFixedLot = 0.03; // legacy fixed lot (unused when brain 
 // With InpInternalBrain=false the EA writes nothing. One brain, one writer.
 input bool   InpInternalBrain      = false; // false = MasterBrain script is authoritative
 input int    InpBrainMaxAgeSeconds = 30;    // brain considered dead beyond this
-input double InpStraddleHardCap    = 0.30;  // 0 = uncapped; REFUSES above it, never caps
+//---- D-006: account-agnostic limits.
+// A lot count means nothing on its own -- 0.30 lots is negligible on a cent account
+// and 100x the exposure on a standard one. The same flaw affects absolute money
+// inputs: 1.00 is a dollar on one account and a cent on another.
+//
+// Expressing limits as a fraction of the account removes the question entirely, with
+// no need to detect the account type (detection is guesswork; currency naming is not
+// standardised). The broker's own tick value carries the scaling.
+//
+//   cap (lots) = (balance x cap%) / (account currency per lot per unit of price)
+//
+// Set InpStraddleCapPctBalance to 0 to fall back to the fixed lot cap below.
+input double InpStraddleCapPctBalance = 2.0;   // max % of balance risked per 1.0 price move
+input double InpStraddleHardCap       = 0.30;  // fixed lot fallback when the % is 0
 input bool   InpStraddleLogSizing  = true;
 #property version   "3.86"
 // Single source of truth for the version shown in logs. #property takes a literal,
@@ -1900,13 +1913,17 @@ double ValidateStraddleLots(const double requested, const ulong main_ticket)
    // of zero and the handover never fires.
    double lots = NormalizeDouble(MathCeil(MathMax(requested, vmin)/step - 1e-9)*step, 2);
 
-   if(InpStraddleHardCap > 0.0 && lots > InpStraddleHardCap)
+   const double cap = EffectiveStraddleCap();
+   if(cap > 0.0 && lots > cap)
    {
       if(InpStraddleLogSizing)
-         PrintFormat("NeoFL STRADDLE: REFUSED - brain asked %.2f, cap is %.2f. "
+         PrintFormat("NeoFL STRADDLE: REFUSED - brain asked %.2f, cap is %.2f (%s). "
                      "Capping would under-cover the gap, so the basket could never "
-                     "reach zero. Raise InpStraddleHardCap deliberately if intended.",
-                     lots, InpStraddleHardCap);
+                     "reach zero.",
+                     lots, cap,
+                     InpStraddleCapPctBalance > 0.0
+                        ? StringFormat("%.1f%% of balance", InpStraddleCapPctBalance)
+                        : "fixed lots");
       return 0.0;
    }
 
@@ -1933,6 +1950,48 @@ double ValidateStraddleLots(const double requested, const ulong main_ticket)
                   ReadObserverValue("BASKET_PNL", 0.0));
    }
    return lots;
+}
+
+//+------------------------------------------------------------------+
+//| D-006: derive the straddle cap from the account, not from a       |
+//| hard-coded lot count.                                             |
+//|                                                                   |
+//| per_lot_per_unit = tick_value / tick_size                         |
+//|   = account currency earned by 1.00 lot per 1.0 of price movement |
+//|                                                                   |
+//| It comes from the broker, so cent accounts, standard accounts,    |
+//| any account currency and any instrument all resolve correctly     |
+//| without inferring anything.                                       |
+//+------------------------------------------------------------------+
+double AccountCurrencyPerLotPerUnit()
+{
+   const double tickval  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   const double ticksize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickval <= 0.0 || ticksize <= 0.0) return 0.0;
+   return tickval / ticksize;
+}
+
+double EffectiveStraddleCap()
+{
+   if(InpStraddleCapPctBalance <= 0.0)
+      return InpStraddleHardCap;              // operator chose a fixed lot cap
+
+   const double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   const double per = AccountCurrencyPerLotPerUnit();
+   if(bal <= 0.0 || per <= 0.0)
+   {
+      // Cannot price the instrument against the account. Fall back rather than
+      // guess -- an unpriceable cap is not a safe cap.
+      static datetime warned = 0;
+      if(TimeCurrent() - warned > 300)
+      {
+         warned = TimeCurrent();
+         PrintFormat("NeoFL: cannot derive cap from account (balance=%.2f, per-lot=%.5f); "
+                     "using fixed %.2f lots", bal, per, InpStraddleHardCap);
+      }
+      return InpStraddleHardCap;
+   }
+   return (bal * InpStraddleCapPctBalance / 100.0) / per;
 }
 
 double CalculateStraddleExecutableLots(const double requested)
@@ -2512,50 +2571,43 @@ int OnInit()
       Print("  EA IS EXECUTION ONLY. Attach NeoFL_MasterBrain_Script_v3_85 to this chart.");
       Print("  Without it, no straddle will be armed - by design, not by failure.");
    }
+   // D-006: report what the account actually is and what was derived from it, for
+   // every account type -- not only real ones. An inference the operator cannot see
+   // is an inference they have to trust (D-002).
+   {
+      const double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      const string ccy = AccountInfoString(ACCOUNT_CURRENCY);
+      const double per = AccountCurrencyPerLotPerUnit();
+      const double cap = EffectiveStraddleCap();
+
+      PrintFormat("  account: %s %.2f %s | contract=%.2f tick_value=%.5f tick_size=%.5f",
+                  acct_name, bal, ccy,
+                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE),
+                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE),
+                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE));
+
+      if(per > 0.0)
+      {
+         PrintFormat("  a 1.00 price move costs %.2f %s per lot", per, ccy);
+         PrintFormat("    main  %.2f lots -> %.2f %s (%.2f%% of balance)",
+                     InpLots, per*InpLots, ccy, bal>0.0 ? per*InpLots/bal*100.0 : 0.0);
+         PrintFormat("    cap   %.2f lots -> %.2f %s (%.2f%% of balance)  [%s]",
+                     cap, per*cap, ccy, bal>0.0 ? per*cap/bal*100.0 : 0.0,
+                     InpStraddleCapPctBalance > 0.0
+                        ? StringFormat("derived from %.1f%% of balance", InpStraddleCapPctBalance)
+                        : "fixed lot cap");
+         if(per*cap > 0.0 && bal > 0.0)
+            PrintFormat("  at the cap, a %.2f move would exhaust the balance", bal/(per*cap));
+      }
+      else
+      {
+         Print("  WARNING: broker did not supply usable tick value/size; cap could not be");
+         PrintFormat("  derived from the account and falls back to %.2f lots.", cap);
+      }
+   }
+
    if(acct==ACCOUNT_TRADE_MODE_REAL)
    {
-      const double bal  = AccountInfoDouble(ACCOUNT_BALANCE);
-      const string ccy  = AccountInfoString(ACCOUNT_CURRENCY);
-      PrintFormat("  *** REAL MONEY *** balance %.2f %s | straddle cap %.2f lots",
-                  bal, ccy, InpStraddleHardCap);
-
-      // Exposure relative to THIS account, computed from the broker's own contract
-      // spec rather than assumed. A cap that is prudent on one account can be
-      // account-ending on another; the only way to know is to price it here.
-      const double contract = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-      const double tickval  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-      const double ticksize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-      PrintFormat("  contract size=%.2f | tick value=%.5f %s | tick size=%.5f",
-                  contract, tickval, ccy, ticksize);
-
-      if(ticksize > 0.0 && tickval > 0.0 && bal > 0.0)
-      {
-         // Cost of a 1.00 price move (one dollar of gold) at each relevant size.
-         const double per_unit_per_lot = tickval / ticksize;
-         const double main_move = per_unit_per_lot * InpLots;
-         const double cap_move  = per_unit_per_lot * InpStraddleHardCap;
-
-         PrintFormat("  a 1.00 move costs: main %.2f lots = %.2f %s (%.1f%% of balance)",
-                     InpLots, main_move, ccy, main_move/bal*100.0);
-         PrintFormat("                     cap  %.2f lots = %.2f %s (%.1f%% of balance)",
-                     InpStraddleHardCap, cap_move, ccy, cap_move/bal*100.0);
-
-         if(cap_move > 0.0)
-            PrintFormat("  straddle cap is wiped out by a %.2f move; main entry by %.2f",
-                        bal/cap_move, main_move>0.0 ? bal/main_move : 0.0);
-
-         // Not a refusal -- sizing is the owner's decision. But an exposure this
-         // large relative to the balance should never pass unremarked.
-         if(cap_move > bal*0.25)
-         {
-            Print("  ------------------------------------------------------------");
-            PrintFormat("  WARNING: at the cap, a 1.00 move is %.0f%% of the balance.",
-                        cap_move/bal*100.0);
-            Print("  Gold routinely moves 10-30 in a day. Consider lowering");
-            Print("  InpStraddleHardCap before the first straddle arms.");
-            Print("  ------------------------------------------------------------");
-         }
-      }
       Print("  Straddle sizing path is new in this build. Verify the first straddle's");
       Print("  arithmetic in the Experts log before leaving this unattended.");
    }

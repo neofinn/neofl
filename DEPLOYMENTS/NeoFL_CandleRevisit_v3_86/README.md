@@ -94,8 +94,12 @@ no recovery mechanism, and in this strategy the basket *is* the risk control.
 The straddle instruction path is new in this build and has never placed an order — not in
 a backtest, not on demo. What still protects you:
 
-- **`InpStraddleHardCap = 0.30`** — the circuit breaker. If the brain asks for more, the
-  straddle is *refused*, not capped. Set this to what you can actually afford to hold.
+- **`InpStraddleCapPctBalance = 2.0`** — the circuit breaker, expressed as a percentage of
+  balance rather than a lot count. The EA derives the lot cap at runtime from the broker's
+  own tick value, so it is correct on cent and standard accounts alike with no re-tuning
+  (D-006). If the brain asks for more, the straddle is *refused*, not capped — a capped
+  straddle under-covers the gap and the basket could never reach zero.
+  Set `InpStraddleCapPctBalance = 0` to use the fixed `InpStraddleHardCap` instead.
 - **Delta-neutral refusal** — a straddle no larger than the main can never bring the basket
   to zero, so it is refused rather than opened.
 - **Brain liveness** — if the MasterBrain script stops, no straddle is armed.
