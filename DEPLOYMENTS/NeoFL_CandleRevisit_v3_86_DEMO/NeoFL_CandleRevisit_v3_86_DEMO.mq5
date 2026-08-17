@@ -2463,27 +2463,54 @@ bool ObserverAllowsNewExposure()
 int OnInit()
 {
    //--- v3.86 startup guards ---------------------------------------------------
-   const ENUM_ACCOUNT_TRADE_MODE acct=
+   // Every refusal states what MT5 actually reported, and goes to the chart as
+   // well as the log -- a refusal nobody can see is the same as a silent failure.
+   const ENUM_ACCOUNT_TRADE_MODE  acct=
       (ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   const ENUM_ACCOUNT_MARGIN_MODE mm=
+      (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+
+   const string acct_name = acct==ACCOUNT_TRADE_MODE_DEMO    ? "DEMO"
+                          : acct==ACCOUNT_TRADE_MODE_CONTEST ? "CONTEST"
+                          : acct==ACCOUNT_TRADE_MODE_REAL    ? "REAL"
+                          : "UNKNOWN("+IntegerToString((int)acct)+")";
+   const string mm_name   = mm==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING ? "HEDGING"
+                          : mm==ACCOUNT_MARGIN_MODE_RETAIL_NETTING ? "NETTING"
+                          : mm==ACCOUNT_MARGIN_MODE_EXCHANGE       ? "EXCHANGE"
+                          : "UNKNOWN("+IntegerToString((int)mm)+")";
+
+   PrintFormat("NeoFL v3.86 startup check | account=%s | margin=%s | server=%s | symbol=%s",
+               acct_name, mm_name, AccountInfoString(ACCOUNT_SERVER), _Symbol);
+
    if(acct!=ACCOUNT_TRADE_MODE_DEMO && !InpAllowLiveAccount)
    {
-      Print("NeoFL v3.86 REFUSED TO START: not a demo account.");
-      Print("  This build changes how the straddle instruction is sourced.");
-      Print("  Set InpAllowLiveAccount=true only after demo validation.");
+      const string why=StringFormat(
+         "NeoFL v3.86 REFUSED TO START\n"
+         "Account trade mode is %s, not DEMO.\n"
+         "This build changes how the straddle instruction is sourced and has not\n"
+         "been validated on demo. To run it here anyway, set InpAllowLiveAccount=true.",
+         acct_name);
+      Print(why);
+      Comment(why);
       return INIT_FAILED;
    }
 
    // D-005: the straddle cannot exist on a netting account, and in this strategy
    // the basket IS the risk control -- so running there would trade unprotected.
-   const ENUM_ACCOUNT_MARGIN_MODE mm=
-      (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
    if(mm!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {
-      Print("NeoFL v3.86 REFUSED TO START: account is NETTING, not hedging.");
-      Print("  The recovery straddle cannot exist, so the only risk control in");
-      Print("  this strategy would be absent.");
+      const string why=StringFormat(
+         "NeoFL v3.86 REFUSED TO START\n"
+         "Account margin mode is %s, not HEDGING.\n"
+         "The recovery straddle needs a long and a short open at once, which this\n"
+         "account cannot do. Since the basket is the only risk control in this\n"
+         "strategy, running here would trade unprotected.",
+         mm_name);
+      Print(why);
+      Comment(why);
       return INIT_FAILED;
    }
+   Comment("");
 
    Print("=====================================================");
    PrintFormat("NeoFL v3.86 | %s | HEDGING | brain=%s | cap=%.2f",
