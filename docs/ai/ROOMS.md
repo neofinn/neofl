@@ -5,20 +5,48 @@ two sessions don't edit the same thing from different assumptions.
 
 ## The rooms
 
-| Room | Open a session in | Owns |
-|---|---|---|
-| **Infrastructure** (this one) | repository root | CORE engines, OBSERVER, DATA, SCRIPTS, EXTERNAL_BRAIN, build tooling, canon, decisions, tests |
-| ARK | `STRATEGIES/ARK/` | ARK signal logic only |
-| Jobbing | `STRATEGIES/JOBBING/` | Jobbing signal logic only |
-| Price Action | `STRATEGIES/PRICE_ACTION/` | Price Action signal logic only |
-| Gold | `STRATEGIES/GOLD/` | Gold signal logic only |
-| FX | `STRATEGIES/FX/` | FX signal logic only |
-| BTC | `STRATEGIES/BTC/` | BTC signal logic only |
-| Indices | `STRATEGIES/INDICES/` | Indices signal logic only |
+The universe divides by **language and authority** first (D-007), then by strategy.
 
-Each strategy directory has its own `CLAUDE.md`. A session opened there picks it up automatically and
-arrives knowing that strategy's rules, its legacy ancestors, and its traps — without having to be
-told again that `NeoFL_ARK_Backtest_v3_00.mq5` is not ARK.
+| Room | Open a session in | Owns | May place orders? |
+|---|---|---|---|
+| **Infrastructure + MT5** | repository root | `CORE/`, `OBSERVER/`, `SCRIPTS/`, `DEPLOYMENTS/`, `BACKTEST/`, tooling, canon, tests | **yes — the only one** |
+| **Python** | `python/` | `python/`, `DATA/`, `EXTERNAL_BRAIN/` | **never** (D-001) |
+| ARK · Jobbing · Price Action · Gold · FX · BTC · Indices | `STRATEGIES/<NAME>/` | that strategy's signal logic only | via Core, from the MT5 room |
+
+Each directory carries its own `CLAUDE.md`, loaded automatically when a session opens there.
+
+### The dividing test
+
+**Does it need to be inside the terminal at the moment a decision becomes an order?**
+
+- **Yes → MT5 room.** Execution, live position management, anything on the tick path.
+- **No → Python room.** Analysis, research, external data, telemetry — anything that can be
+  late without being wrong.
+
+### Different standards of proof
+
+This is the substantive reason for the split, not tidiness.
+
+MQL5 runs on the tick path with money behind it. A mistake is an order. It must compile, and
+it is only really proven by demo execution.
+
+Python is analytical. A mistake is a wrong conclusion — cheaper, but more insidious, because
+a wrong conclusion can be believed for months. It is proven by tests against known-answer
+cases.
+
+Separate rooms stop either borrowing the other's standard. A Python session must not conclude
+"it compiles" is enough; an MQL5 session must not conclude "the unit test passes" means it
+will execute.
+
+### The shared contract
+
+```
+CORE/NeoFL_DataValidation/NeoFL_DataQuality.mqh   <->   python/neofl_gateway/schema.py
+```
+
+Quality states, verdicts and the provenance record must mean the same thing on both sides, or
+MQL5 will act on data Python already judged unusable. Either room may propose a change;
+**neither changes it alone.**
 
 ## Why the split
 

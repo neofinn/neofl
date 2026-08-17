@@ -333,3 +333,80 @@ around it.
 3. Absolute inputs remain available for an operator who deliberately wants them, but are no
    longer the default path.
 4. Moving an account, changing broker, or switching instrument requires no re-tuning.
+
+---
+
+## D-007 — The universe splits into MT5 development and Python development
+
+**Date:** 2026-08-16
+**Decided by:** product owner
+**Status:** active
+
+### Decision
+
+Development divides into two rooms, both built on the same NeoFL infrastructure:
+
+- **MT5 development** — everything that executes or runs inside MetaTrader.
+- **Python development** — everything that ingests, analyses, or reasons about data outside it.
+
+### The dividing line
+
+The canon already sets it:
+
+> MQL5 is responsible for market execution, broker interaction, final order handling,
+> SL/TP, trailing, and execution safety.
+> Python is responsible for external data, normalization, feature processing, databases,
+> and agentic services.
+
+Restated as a test — **does it need to be inside the terminal at the moment a decision
+becomes an order?**
+
+- Yes → MT5. Execution, live position management, anything on the tick path.
+- No → Python. Analysis, research, external data, telemetry, anything that can be late
+  without being wrong.
+
+### Room boundaries
+
+| | MT5 room | Python room |
+|---|---|---|
+| Owns | `CORE/`, `STRATEGIES/`, `OBSERVER/`, `SCRIPTS/`, `DEPLOYMENTS/`, `BACKTEST/` | `python/`, `DATA/`, `EXTERNAL_BRAIN/` |
+| Language | MQL5 | Python |
+| Verifies with | `tools/mql5_compile.sh`, MT5 Strategy Tester, demo | `python3 -m unittest` |
+| Authority | **the only component that may place an order** | **may never place an order** (D-001) |
+
+### Why this is not merely organisational
+
+The two sides have different failure modes and different standards of proof.
+
+MQL5 code runs on the tick path with real money behind it. A mistake there is an order.
+It must compile, and it should be provable by demo execution before it is trusted.
+
+Python code is analytical. A mistake there is a wrong conclusion, which is cheaper but
+more insidious — it can be believed for a long time. Python work is proven by tests
+against known-answer cases, which is why the reference mirrors exist.
+
+Keeping them in separate rooms means neither borrows the other's standard of proof. A
+Python session cannot conclude that "it compiles" is sufficient; an MQL5 session cannot
+conclude that "the unit test passes" means it will execute.
+
+### The shared contract
+
+The two sides meet at the data schema, and it is maintained in both languages
+deliberately:
+
+```
+CORE/NeoFL_DataValidation/NeoFL_DataQuality.mqh   <->   python/neofl_gateway/schema.py
+```
+
+Quality states, verdicts, and the decision-provenance record must mean the same thing on
+both sides. If they drift, the MQL5 side will act on data the Python side already
+considered unusable. **Either room may propose a schema change; neither changes it alone.**
+
+### Rules
+
+1. Shared Core changes happen in the **infrastructure room** (repository root), not in a
+   strategy or language room — a change there can break consumers the room cannot see.
+2. Neither room edits the other's tree. Cross-boundary needs are handed over, not reached
+   across.
+3. The schema is a joint contract; changes are coordinated.
+4. D-001 holds absolutely: no Python component ever places, modifies, or closes an order.

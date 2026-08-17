@@ -1,9 +1,12 @@
 # NeoFL — instructions for AI agents
 
-> **This is the INFRASTRUCTURE room.** It owns CORE, OBSERVER, DATA, SCRIPTS, EXTERNAL_BRAIN, build
-> tooling, canon, decisions, and tests. Each strategy has its own room under `STRATEGIES/<NAME>/`
-> with its own `CLAUDE.md`. Shared-code changes happen **here only** — a strategy room cannot see
-> whether a CORE change broke the other six. See `docs/ai/ROOMS.md`.
+> **This is the INFRASTRUCTURE + MT5 room.** The MQL5 tree lives here: CORE, STRATEGIES,
+> OBSERVER, SCRIPTS, DEPLOYMENTS, BACKTEST, plus build tooling, canon, decisions and tests.
+> **This room holds the only code permitted to place an order.**
+>
+> Two other rooms exist (D-007): `python/` for analysis, data and the gateway, and one per
+> strategy under `STRATEGIES/<NAME>/`. Shared-code changes happen **here only** — another
+> room cannot see whether a CORE change broke its six siblings. See `docs/ai/ROOMS.md`.
 
 NeoFL is a modular algorithmic trading platform for MetaTrader 5: one shared Core engine, seven
 independent strategies. Real money is the eventual endpoint, so the constraints below are hard rules.
@@ -110,6 +113,45 @@ The genuinely valuable ancestors: `NeoFL_MasterBrain_v3_85.mqh` (straddle/recove
 Never request, log, echo, commit, or place in code: broker credentials, API keys or secrets, exchange
 credentials, AI API keys, SSH keys, or account passwords. Environment variables and untracked local
 config only. Do not work around `.gitignore`.
+
+## The standard of proof here
+
+MQL5 runs on the tick path with real money behind it. A mistake is an order, not a wrong
+answer.
+
+```bash
+tools/mql5_compile.sh <dir-or-file.mq5>     # must be 0 errors, always
+tools/mql5_package.sh <entry.mq5> <outdir>  # self-contained package, canon rule 7
+```
+
+**Compiling proves the code is valid MQL5. Nothing more.** It does not prove the strategy
+works, that the numbers are right, or that the broker will accept the order. Say so when
+reporting.
+
+The Strategy Tester needs broker credentials, so an agent cannot run it. Backtests and demo
+results are human-observed evidence and must be reported as such.
+
+## Rules specific to this room
+
+1. **Identity by magic number or ticket registry — never by comment.** Comments are not
+   reliable broker state. See `docs/architecture/LEGACY_STRADDLE_DEFECTS.md` for what went
+   wrong when this was violated.
+2. **One writer per piece of shared state.** Two components writing the same global variable
+   is the defect that silently broke v3.85 straddle sizing.
+3. **No absolute lot or money constants.** Derive from the account (D-006) — a number tuned
+   on one account is wrong on another by up to 100×.
+4. **Refuse rather than degrade.** A capped straddle under-covers its gap; a delta-neutral
+   basket can never reach zero. Refusing and saying why beats acting on something that
+   cannot work.
+5. **Emit decision provenance** (D-002) — including refusals. Silence is indistinguishable
+   from a broken engine.
+6. **`legacy/` is read-only.** Preserve it; never edit or delete.
+
+## Handing work to the Python room
+
+Anything analytical — measuring whether a rule helps, processing history, external data,
+telemetry — belongs in the Python room. Write down what you need and hand it over rather
+than building an analysis engine inside an EA.
 
 ## Workflow
 
