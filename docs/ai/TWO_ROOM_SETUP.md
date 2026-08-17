@@ -32,21 +32,56 @@ First message:
 Each directory has its own `CLAUDE.md` which loads automatically, so both sessions arrive
 already knowing their boundaries.
 
-## The sync rhythm
+## How the rooms are isolated
 
-Both rooms work on `main`. Two commands:
+Each room runs in its **own git worktree on its own branch**:
 
-```bash
-tools/sync.sh start              # before you begin. pulls, rebases, runs tests
-tools/sync.sh save "what I did"  # when a piece of work is done
+```
+~/Desktop/NeoFL                                    main            (this chat)
+~/Desktop/NeoFL/.claude/worktrees/<name>           claude/<name>   MT5 room
+~/Desktop/NeoFL/python/.claude/worktrees/<name>    claude/<name>   Python room
 ```
 
-`save` refuses to push if the tests fail, if changed MQL5 does not compile, or if a
-filename looks like it carries secrets. It rebases onto the other room's work rather than
-creating merge commits, so history stays linear and it is obvious who changed what.
+Separate directories and separate branches, so **the rooms cannot overwrite each other
+while working**. `main` is the meeting point. Work in a room is invisible to the other
+room until someone deliberately shares it.
 
-**Rule of thumb: `start` when you sit down, `save` when you finish a thought.** Long gaps
-between syncs are where conflicts come from.
+## The four commands
+
+```bash
+tools/sync.sh status            where am I, what is unshared, what am I behind on
+tools/sync.sh start             pull main into my branch, then run the tests
+tools/sync.sh save "what I did" test, compile, commit, push MY branch
+tools/sync.sh share             merge my branch into main — the other room can now see it
+```
+
+**`save` and `share` are deliberately different.** `save` is safe and local: it protects
+your work without exposing it. `share` is the moment your work becomes the other room's
+problem, so it is a separate decision.
+
+`save` refuses to proceed if tests fail, if changed MQL5 does not compile, or if a
+filename looks like it carries secrets. `share` re-runs the tests **after** merging, since
+two changes that each pass alone can still break together — that is the whole reason to
+test the merged state rather than the branch.
+
+`start` merges `main` in rather than rebasing. These branches are pushed, and rebasing
+published history rewrites commits the other room may already hold.
+
+## A normal working rhythm
+
+```
+Room A: sync.sh start          # begin with the other room's latest
+Room A: ...work...
+Room A: sync.sh save "built X" # safe, still private
+Room A: ...more work...
+Room A: sync.sh save "fixed Y"
+Room A: sync.sh share          # publish when the piece is coherent
+
+Room B: sync.sh start          # picks up A's work
+```
+
+Share when a piece of work is *finished*, not every commit. Sharing half-done work is how
+the other room ends up building on something that is about to change.
 
 ## Who owns what
 
