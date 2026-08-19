@@ -1,0 +1,7 @@
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import './style.css';
+
+const cards=[['Global Brain','ONLINE','Global service'],['Connected Accounts','—','Supabase-backed'],['Live Analysis','VERIFYING','Awaiting Brain heartbeat'],['Execution Gateway','READY','Canonical /api/v1']];
+function App(){return <main><header><div><div className="eyebrow">NEOFL EXECUTION GATEWAY</div><h1>Control Room</h1><p>Global Brain · account-isolated execution · realtime telemetry</p></div><span className="pill">SYSTEM BUILD</span></header><section className="grid">{cards.map(([a,b,c])=><article key={a}><span>{a}</span><strong>{b}</strong><small>{c}</small></article>)}</section><section className="panel"><h2>Deployment foundation</h2><p>This Vercel web shell is connected to the NeoFL source repository and is designed to use the existing NeoFL Supabase project. No fake trading activity is generated.</p><div className="status"><b>Canonical API</b><code>/api/v1/*</code></div><div className="status"><b>Execution authority</b><span>Gateway only · Brain never places broker orders</span></div><div className="status"><b>Account isolation</b><span>Bound · unblocked · Auto Trade enabled · authenticated</span></div></section></main>}
+createRoot(document.getElementById('root')).render(<App/>);
