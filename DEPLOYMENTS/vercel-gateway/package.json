@@ -1,0 +1,9 @@
+{
+  "name": "neofl-execution-gateway-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {"dev":"vite","build":"vite build","preview":"vite preview"},
+  "dependencies": {"@supabase/supabase-js":"latest","react":"latest","react-dom":"latest","react-router-dom":"latest","lucide-react":"latest"},
+  "devDependencies": {"@vitejs/plugin-react":"latest","vite":"latest","typescript":"latest"}
+}
