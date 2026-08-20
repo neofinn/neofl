@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-08-20 — Admin and MCP control plane
+
+### Added
+- `docs/architecture/CONTROL_PLANE.md` — hard boundary between external connections, Admin Control Plane, MCP Dock, and Brain.
+- `python/neofl_gateway/control_plane.py` — connection/channel authorization policy with scoped secret references and no raw credential storage.
+- `python/neofl_gateway/mcp_gateway.py` — MCP Dock gateway that requires an Admin-authorized channel before presenting a tool request to the Brain interface.
+- `tests/unit/test_control_plane.py` — isolation, disabled-connection, and MCP capability tests.
+
+### Architecture rule
+- External systems do not connect directly to Brain.
+- Admin Control Plane is authoritative for connections, permissions, routing, and secret references.
+- MCP Dock is separate from Admin UI but remains policy-mediated; its logical Brain interface is not an uncontrolled infrastructure path.
+- Brain receives normalized authorized channel payloads only.
+- No trading logic or execution authority is added.
+
+Trading-behavior change: no.
+
 ## 2026-08-20 — NSE India Docker input service
 
 ### Added
