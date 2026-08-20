@@ -1,0 +1,8 @@
+services:
+  nseindia:
+    image: imcodeman/nseindia
+    container_name: neofl-nseindia
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    init: true
