@@ -4,46 +4,77 @@
 
 The Brain is an engine. It has no direct provider connections and never owns provider credentials.
 
-All external systems terminate at the Admin Control Plane. The Admin Control Plane decides which
-connections exist, which channels are enabled, what data may enter the Brain, and where Brain output
-may leave.
+The Admin Dock is the Brain's authoritative control-plane link. All non-MCP external systems terminate
+at Admin, and Admin delivers only authorized normalized inputs to Brain. Brain outputs return to Admin
+for routing. MCP is the intentional exception: MCP is a Brain data feeder and has a direct, scoped
+Brain-facing input channel, while Admin still controls MCP authorization and capabilities.
 
 ```text
-External systems
-  -> Admin Control Plane
-  -> authorized input channels
-  -> Brain Engine
-  -> authorized output channels
-  -> Admin Control Plane
-  -> external systems
+NSE / MT5 / APIs / other external systems
+              |
+              v
+         ADMIN DOCK
+     control / keys / policy
+              |
+       authorized inputs
+              |
+              v
+          BRAIN ENGINE
+              ^
+              |
+     DIRECT MCP DATA FEED
+              |
+          MCP DOCK
+       (Admin-authorized)
+
+Brain outputs
+      |
+      v
+  ADMIN DOCK
+      |
+  authorized routing
+      |
+ external destinations
 ```
 
 ## Admin Dock
 
-The Admin Dock is the authoritative control surface for the NeoFL universe.
+The Admin Dock is the authoritative control surface for the NeoFL universe **and the controlled link
+to the Brain**.
 
 Responsibilities:
 - create, disable, rotate, and remove connections
 - hold secret references; never expose raw credentials to Brain
 - assign input/output channels
 - enforce permissions and tenant/user scope
+- deliver authorized normalized external inputs to Brain
+- receive and route Brain outputs
 - configure routing, limits, and health policy
 - audit connection and routing changes
 - block disabled or unauthorized connections
 
+The Brain must not create an external connection on its own.
+
+## Admin ↔ Brain link
+
+`AdminBrainLink` is the single programmatic interface for Admin-to-Brain delivery and Brain-to-Admin
+output authorization. It validates the channel through the Admin Control Plane before data reaches the
+Brain engine. This makes the Admin Dock an actual connected control plane rather than documentation-only
+wiring.
+
 ## MCP Dock
 
-The MCP Dock is a separate MCP-specific control surface. It manages MCP servers, tools, resources,
-and sessions, but it does not bypass Admin policy.
+The MCP Dock is a separate MCP-specific control surface and data feeder. MCP has the intentional direct
+Brain channel `mcp.brain.input` because MCP is an explicit Brain data/tool feeder.
 
-```text
-MCP Dock
-  -> MCP Gateway / Policy
-  -> authorized Brain interface
-```
+Admin still controls:
+- MCP server/session enablement
+- allowed tools and resources
+- capability authorization
+- credential references
+- channel policy
 
-The MCP Dock may provide a logical Brain interface, but it must not create an uncontrolled network path
-or inject provider credentials into Brain.
+The MCP direct path is input/data-feed only. It does not grant unrestricted output or trading authority.
 
 ## Connection lifecycle
 
@@ -53,9 +84,10 @@ or inject provider credentials into Brain.
 4. The adapter requests credentials only at execution time.
 5. Connection Manager supplies the scoped secret to the adapter.
 6. Adapter emits normalized channel data.
-7. Brain receives only the normalized authorized payload.
-8. Brain output returns through the controlled channel/router.
-9. Admin policy decides whether the output may reach its destination.
+7. Admin authorizes and delivers the data to Brain through `AdminBrainLink`.
+8. MCP may feed Brain through `mcp.brain.input` when its capability is Admin-authorized.
+9. Brain output returns to Admin through the controlled link.
+10. Admin policy decides whether the output may reach its destination.
 
 ## Failure policy
 
